@@ -1,25 +1,22 @@
 # Radarr Movie Recommender
 
-> Lightweight AI-powered movie recommendation engine for [Radarr](https://radarr.video/) — no Docker, no web UI, just a smart CLI script.
+A Python CLI script that uses a local LLM ([Ollama](https://ollama.com/)) to suggest movies based on your existing [Radarr](https://radarr.video/) library, then adds the best ones automatically.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
-## Why this project exists
+## What it does
 
-Most Radarr automation tools are either **too dumb** (RSS feeds, static lists) or **too heavy** (web apps, Docker stacks, databases).
+I built this as a personal project to discover films I might enjoy, based on what I already have in my library. It picks 10 random films from Radarr, asks a local LLM for similar suggestions, validates them against OMDb, scores them by thematic similarity, and optionally adds the top results to Radarr automatically.
 
-This project sits in the sweet spot:
+The main components:
 
-- Uses a **local LLM** (Ollama) to generate semantically relevant suggestions
-- Validates every suggestion against **OMDb** (rating, year, genre)
-- Scores candidates with **plot embeddings** for real thematic similarity
-- Adds directly to **Radarr** via its API
-- Runs as a **simple CLI script** — no server, no Docker, no database
-
-> Inspired by [Recommendarr](https://github.com/fingerthief/recommendarr) but without the infrastructure overhead.
+- A **local LLM** (Ollama) generates suggestions -- no external AI API needed
+- **OMDb** validates each suggestion (rating, year, genre)
+- **Semantic plot embeddings** score thematic similarity
+- Everything integrates directly with **Radarr** via its API
+- Runs as a **single Python script** with no server or database required
 
 ---
 
@@ -199,8 +196,4 @@ Every film that passes through the system is added to `blacklist.json`:
 
 This means each daily run discovers genuinely new films.
 
----
 
-## License
-
-MIT
