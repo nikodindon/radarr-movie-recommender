@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-newmovies_v11_1.py — Patch v11.1
+newmovies_v12.py — Radarr Movie Recommender
 
-Corrections vs v11 :
-1. Seuil IMDb adaptatif : si < 2 candidats après passage normal,
-   on relance avec score -0.8 et genres adjacents élargis
-2. Cache des embeddings cross-films (évite de recalculer le même plot 2x)
-3. Retry OMDb sans année si lookup Radarr échoue (ex: "The Girl with All the Gifts")
-4. Filtre "Things to Come 2016" pour Metropolis 1927 : on pénalise les films
-   qui ont 0 mots en commun dans le plot avec le film source ET plot_sim < 0.5
+v12 changes:
+- All log messages in English
+- TV Movie, TV Series, Mini-Series added to BAD_GENRES filter
 """
 
 import requests
@@ -30,7 +26,7 @@ from urllib.parse import quote
 # CHARGEMENT .env
 # =========================
 def _load_env():
-    """Charge les variables depuis un fichier .env si présent."""
+    """Load variables from .env file if present."""
     env_file = Path(__file__).parent / ".env"
     if env_file.exists():
         for line in env_file.read_text(encoding="utf-8").splitlines():
@@ -42,12 +38,12 @@ def _load_env():
 _load_env()
 
 # =========================
-# CONFIG — lue depuis .env ou valeurs par défaut
+# CONFIG — read from .env or defaults
 # =========================
 _omdb_raw = os.environ.get("OMDB_KEYS", "")
 OMDB_KEYS = [k.strip() for k in _omdb_raw.split(",") if k.strip()]
 if not OMDB_KEYS:
-    print("[ERROR] Aucune clé OMDb trouvée. Vérifie ton fichier .env (OMDB_KEYS=clé1,clé2,...)")
+    print("[ERROR] No OMDb key found. Check your .env file (OMDB_KEYS=key1,key2,...)")
     exit(1)
 
 RADARR_API_KEY   = os.environ.get("RADARR_API_KEY", "")
@@ -56,7 +52,7 @@ ROOT_FOLDER      = os.environ.get("ROOT_FOLDER",    "F:\\Movies")
 OLLAMA_MODEL     = os.environ.get("OLLAMA_MODEL",   "llama3.1:8b")
 
 if not RADARR_API_KEY:
-    print("[ERROR] RADARR_API_KEY manquante. Vérifie ton fichier .env")
+    print("[ERROR] RADARR_API_KEY missing. Check your .env file")
     exit(1)
 
 CONFIG_FILE      = "omdb_apikey.conf"
@@ -64,8 +60,7 @@ BLACKLIST_FILE   = "blacklist.json"
 OLLAMA_EMBED_URL = f"http://localhost:11434/api/embeddings"
 LOG_DIR          = "logs"
 
-# Genres adjacents — si un film source a peu de candidats,
-# on accepte ces genres en plus de ceux du film source
+# Adjacent genres — used in relaxed mode when source film yields few candidates
 ADJACENT_GENRES = {
     "action":    ["adventure", "thriller"],
     "adventure": ["action", "drama"],
@@ -88,11 +83,11 @@ ADJACENT_GENRES = {
 # =========================
 # ARGUMENTS
 # =========================
-parser = argparse.ArgumentParser(description="Recommandations Radarr v11.1")
+parser = argparse.ArgumentParser(description="Radarr Movie Recommender v12")
 parser.add_argument("--sd",          type=int,   default=1970)
 parser.add_argument("--fd",          type=int,   default=2030)
-parser.add_argument("--score",       type=float, default=6.5,  help="Note IMDb min (normale)")
-parser.add_argument("--score-relax", type=float, default=5.9,  help="Note IMDb min (mode relâché si peu de candidats)")
+parser.add_argument("--score",       type=float, default=6.5,  help="Minimum IMDb rating (normal)")
+parser.add_argument("--score-relax", type=float, default=5.9,  help="Minimum IMDb rating (relaxed fallback mode)")
 parser.add_argument("--sources",     type=int,   default=10)
 parser.add_argument("--suggestions", type=int,   default=14)
 parser.add_argument("--top",         type=int,   default=10)
@@ -148,10 +143,10 @@ def save_blacklist(bl):
         with open(BLACKLIST_FILE, "w", encoding="utf-8") as f:
             json.dump(sorted(bl), f, indent=2, ensure_ascii=False)
     except Exception as e:
-        log(f"Erreur sauvegarde blacklist : {e}", "ERROR")
+        log(f"Error saving blacklist: {e}", "ERROR")
 
 BLACKLIST = load_blacklist()
-log(f"Blacklist chargée : {len(BLACKLIST)} titres")
+log(f"Blacklist loaded: {len(BLACKLIST)} titles")
 
 # =========================
 # CLÉS OMDb
@@ -183,15 +178,15 @@ def test_omdb_key(key):
 
 CURRENT_OMDB_KEY = load_current_key()
 if not test_omdb_key(CURRENT_OMDB_KEY):
-    log("Clé OMDb invalide, rotation...", "WARNING")
+    log("Invalid OMDb key, rotating...", "WARNING")
     for key in OMDB_KEYS:
         if test_omdb_key(key):
             CURRENT_OMDB_KEY = key
             save_current_key(key)
-            log(f"Nouvelle clé : {key[:8]}...", "SUCCESS")
+            log(f"New active key: {key[:8]}...", "SUCCESS")
             break
     else:
-        log("Aucune clé OMDb fonctionnelle !", "ERROR")
+        log("No working OMDb key found!", "ERROR")
         exit(1)
 
 # =========================
@@ -210,14 +205,14 @@ def test_ollama():
         return False
 
 OLLAMA_OK = test_ollama()
-log(f"Ollama {'opérationnel' if OLLAMA_OK else 'INDISPONIBLE'}",
+log(f"Ollama {'ready' if OLLAMA_OK else 'UNAVAILABLE'}",
     "SUCCESS" if OLLAMA_OK else "WARNING")
 
 # =========================
 # CACHES
 # =========================
 OMDB_CACHE      = {}
-EMBEDDING_CACHE = {}  # partagé globalement entre tous les films
+EMBEDDING_CACHE = {}  # shared globally across all source films
 
 # =========================
 # OMDb
@@ -240,7 +235,7 @@ def _omdb_request(params: dict, retries=2):
             time.sleep(1.1)
             if data.get("Response") == "False":
                 if "limit" in data.get("Error", "").lower():
-                    log(f"Quota {CURRENT_OMDB_KEY[:8]}... → rotation", "WARNING")
+                    log(f"Quota reached {CURRENT_OMDB_KEY[:8]}... rotating key", "WARNING")
                     idx = OMDB_KEYS.index(CURRENT_OMDB_KEY)
                     CURRENT_OMDB_KEY = OMDB_KEYS[(idx + 1) % len(OMDB_KEYS)]
                     save_current_key(CURRENT_OMDB_KEY)
@@ -265,7 +260,7 @@ def get_omdb_full(raw_title: str, year=None):
         params["y"] = year
 
     data = _omdb_request(params)
-    # Retry sans année si pas trouvé
+    # Retry without year if not found
     if not data and year:
         data = _omdb_request({"t": title, "type": "movie", "plot": "short"})
 
@@ -310,12 +305,12 @@ def get_radarr_movies():
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        log(f"Erreur Radarr : {e}", "ERROR")
+        log(f"Radarr error: {e}", "ERROR")
         return []
 
 def get_radarr_lookup(title, year=None):
     """
-    Lookup Radarr. Si échoue avec année, retry sans.
+    Radarr movie lookup. Retries without year if first attempt fails.
     """
     def _lookup(term):
         try:
@@ -336,7 +331,7 @@ def get_radarr_lookup(title, year=None):
             return None
 
     result = _lookup(f"{title} {year}" if year else title)
-    # Retry sans année si pas trouvé ou tmdbId absent
+    # Retry without year if not found or tmdbId missing
     if (not result or not result.get("tmdbId")) and year:
         result = _lookup(title)
     return result
@@ -359,12 +354,12 @@ def add_to_radarr(movie):
             json=payload, timeout=10
         )
         if r.status_code in [200, 201]:
-            log(f"Ajouté : {movie['title']} ({movie['year']})", "SUCCESS")
+            log(f"Added: {movie['title']} ({movie['year']})", "SUCCESS")
             return True
-        log(f"Erreur ajout {movie['title']} : {r.status_code}", "ERROR")
+        log(f"Error adding {movie['title']}: {r.status_code}", "ERROR")
         return False
     except Exception as e:
-        log(f"Exception ajout : {e}", "ERROR")
+        log(f"Exception while adding: {e}", "ERROR")
         return False
 
 # =========================
@@ -412,7 +407,7 @@ BAD_PATTERNS = re.compile(
     r"nominated short|oscar short|rifftrax|mystery science)",
     re.IGNORECASE
 )
-BAD_GENRES = {"Short", "TV Movie", "Documentary", "Game-Show",
+BAD_GENRES = {"Short", "TV Movie", "TV Series", "Mini-Series", "Documentary", "Game-Show",
               "Reality-TV", "Talk-Show", "Music"}
 
 def is_junk(title):
@@ -420,8 +415,8 @@ def is_junk(title):
 
 def is_valid_candidate(movie, min_score=None, extra_genres=None):
     """
-    min_score : seuil IMDb (args.score par défaut, args.score_relax en mode relâché)
-    extra_genres : set de genres supplémentaires acceptés (mode relâché)
+    min_score: IMDb threshold (args.score by default, args.score_relax in relaxed mode)
+    extra_genres: additional accepted genres (relaxed mode)
     """
     if not movie:
         return False
@@ -441,7 +436,7 @@ def is_valid_candidate(movie, min_score=None, extra_genres=None):
 # SCORING
 # =========================
 def get_extended_genres(base_genres: set) -> set:
-    """Retourne les genres adjacents pour le mode relâché."""
+    """Return adjacent genres for relaxed mode."""
     extended = set(base_genres)
     for g in base_genres:
         extended.update(ADJACENT_GENRES.get(g.lower(), []))
@@ -561,7 +556,7 @@ Rules:
 Respond ONLY with valid JSON:
 {{"films": ["Title 1", "Title 2", ...]}}"""
 
-    log(f"Ollama → suggestions pour '{base['title']}'...", "OLLAMA")
+    log(f"Ollama → generating suggestions for '{base['title']}'...", "OLLAMA")
     try:
         result = subprocess.run(
             ["ollama", "run", OLLAMA_MODEL],
@@ -569,13 +564,13 @@ Respond ONLY with valid JSON:
             timeout=120, encoding="utf-8", errors="replace"
         )
         titles = _parse_ollama_titles(result.stdout)
-        log(f"Ollama : {len(titles)} titres", "OLLAMA")
+        log(f"Ollama: {len(titles)} titles extracted", "OLLAMA")
         return titles
     except subprocess.TimeoutExpired:
-        log("Ollama timeout", "WARNING")
+        log("Ollama timeout (120s)", "WARNING")
         return []
     except Exception as e:
-        log(f"Ollama erreur : {e}", "ERROR")
+        log(f"Ollama error: {e}", "ERROR")
         return []
 
 # =========================
@@ -583,7 +578,7 @@ Respond ONLY with valid JSON:
 # =========================
 def fallback_omdb_search(base: dict) -> list[str]:
     found = []
-    log(f"Fallback OMDb pour '{base['title']}'...", "FALLBACK")
+    log(f"OMDb fallback for '{base['title']}'...", "FALLBACK")
     if base["director"] and base["director"] != "N/A":
         for t in search_omdb(base["director"].split()[-1], 10):
             if t not in found:
@@ -599,7 +594,7 @@ def fallback_omdb_search(base: dict) -> list[str]:
         for t in search_omdb(actor, 8):
             if t not in found:
                 found.append(t)
-    log(f"Fallback : {len(found)} candidats bruts", "FALLBACK")
+    log(f"Fallback: {len(found)} raw candidates found", "FALLBACK")
     return found
 
 # =========================
@@ -608,8 +603,8 @@ def fallback_omdb_search(base: dict) -> list[str]:
 def validate_candidate(raw_title, base, radarr_titles, radarr_tmdb,
                         relaxed=False) -> dict | None:
     """
-    Valide un titre candidat et retourne un dict candidat ou None.
-    relaxed=True : seuil IMDb abaissé + genres adjacents acceptés.
+    Validate a candidate title and return a candidate dict or None.
+    relaxed=True: lower IMDb threshold + adjacent genres accepted.
     """
     title = _clean_title(raw_title)
     if not title:
@@ -617,36 +612,36 @@ def validate_candidate(raw_title, base, radarr_titles, radarr_tmdb,
     if title.lower() == base["title"].lower():
         return None
     if title in BLACKLIST or title in radarr_titles:
-        log(f"  Skip (BL/Radarr) : {title}", "DEBUG")
+        log(f"  Skip (blacklist/Radarr): {title}", "DEBUG")
         return None
     if is_junk(title):
-        log(f"  Junk : {title}", "DEBUG")
+        log(f"  Junk title filtered: {title}", "DEBUG")
         return None
 
     min_score = args.score_relax if relaxed else args.score
     omdb = get_omdb_full(title)
     if not omdb:
-        log(f"  OMDb KO : {title}", "DEBUG")
+        log(f"  OMDb not found: {title}", "DEBUG")
         return None
     if omdb["title"] in radarr_titles or omdb["title"] in BLACKLIST:
-        log(f"  Skip (BL/Radarr OMDb title) : {omdb['title']}", "DEBUG")
+        log(f"  Skip (blacklist/Radarr OMDb title): {omdb['title']}", "DEBUG")
         return None
     if not is_valid_candidate(omdb, min_score=min_score):
-        log(f"  Filtré : {omdb['title']} (IMDb:{omdb['rating']} {omdb['year']})", "DEBUG")
+        log(f"  Filtered out: {omdb['title']} (IMDb:{omdb['rating']} {omdb['year']})", "DEBUG")
         return None
 
     sc, reasons = score_candidate(base, omdb, relaxed=relaxed)
     min_sc = 3.5 if relaxed else 4.0
     if sc < min_sc:
-        log(f"  Score bas : {omdb['title']} → {sc}", "DEBUG")
+        log(f"  Score too low: {omdb['title']} → {sc}", "DEBUG")
         return None
 
     lookup = get_radarr_lookup(omdb["title"], omdb["year"])
     if not lookup:
-        log(f"  Lookup KO : {omdb['title']}", "DEBUG")
+        log(f"  Radarr lookup failed: {omdb['title']}", "DEBUG")
         return None
     if lookup.get("tmdbId") in radarr_tmdb:
-        log(f"  tmdbId présent : {omdb['title']}", "DEBUG")
+        log(f"  Already in Radarr (tmdbId): {omdb['title']}", "DEBUG")
         return None
 
     log(f"  ✓ {omdb['title']} ({omdb['year']}) IMDb:{omdb['rating']} "
@@ -668,11 +663,11 @@ def validate_candidate(raw_title, base, radarr_titles, radarr_tmdb,
 # TRAITEMENT D'UN FILM SOURCE
 # =========================
 def process_source(base: dict, radarr_titles: set, radarr_tmdb: set) -> list[dict]:
-    # 1. Suggestions Ollama
+    # 1. Ollama suggestions
     suggested = ollama_suggest_titles(base)
 
     if len(suggested) < 4:
-        log(f"Peu de suggestions → fallback", "FALLBACK")
+        log(f"Too few Ollama suggestions → fallback", "FALLBACK")
         extra = fallback_omdb_search(base)
         seen  = {t.lower() for t in suggested}
         for t in extra:
@@ -680,19 +675,18 @@ def process_source(base: dict, radarr_titles: set, radarr_tmdb: set) -> list[dic
                 suggested.append(t)
                 seen.add(t.lower())
 
-    log(f"Validation de {len(suggested)} titres...", "INFO")
+    log(f"Validating {len(suggested)} titles...", "INFO")
 
-    # 2. Passe normale
+    # 2. Normal pass
     validated = []
     for raw in suggested:
         c = validate_candidate(raw, base, radarr_titles, radarr_tmdb, relaxed=False)
         if c:
             validated.append(c)
 
-    # 3. Passe relâchée si moins de 2 candidats
+    # 3. Relaxed pass if fewer than 2 candidates
     if len(validated) < 2:
-        log(f"Seulement {len(validated)} candidat(s) → passe relâchée "
-            f"(seuil:{args.score_relax}, genres adjacents)", "FALLBACK")
+        log(f"Only {len(validated)} candidate(s) → relaxed pass (threshold:{args.score_relax}, adjacent genres)", "FALLBACK")
         validated_titles = {c["title"] for c in validated}
         for raw in suggested:
             title = _clean_title(raw)
@@ -703,9 +697,9 @@ def process_source(base: dict, radarr_titles: set, radarr_tmdb: set) -> list[dic
                 validated.append(c)
                 validated_titles.add(c["title"])
 
-        # Si toujours rien, fallback supplémentaire avec passe relâchée
+        # Still not enough — reinforced fallback in relaxed mode
         if len(validated) < 2:
-            log("Fallback renforcé en mode relâché...", "FALLBACK")
+            log("Reinforced fallback in relaxed mode...", "FALLBACK")
             extra2 = fallback_omdb_search(base)
             for t in extra2:
                 if _clean_title(t) not in {_clean_title(s) for s in suggested}:
@@ -722,18 +716,18 @@ def process_source(base: dict, radarr_titles: set, radarr_tmdb: set) -> list[dic
 def print_report(results, added):
     sep = "=" * 90
     print(f"\n{sep}")
-    print(f"  RAPPORT — {datetime.now().strftime('%d/%m/%Y %H:%M')} — {len(results)} films")
+    print(f"  REPORT — {datetime.now().strftime('%Y-%m-%d %H:%M')} — {len(results)} films")
     print(sep)
     for i, m in enumerate(results, 1):
-        tag = "✅ AJOUTÉ" if m["title"] in added else "📋 proposé"
+        tag = "✅ ADDED" if m["title"] in added else "📋 proposed"
         rlx = " [relax]" if m.get("relaxed") else ""
         rsn = ", ".join(m.get("reasons", []))
         print(f"  {i:2d}. [{tag}]{rlx} {m['title']} ({m['year']}) "
               f"IMDb:{m['rating']:.1f} score:{m['score']}")
         print(f"       ↳ {rsn}")
-        print(f"       ↳ depuis : {m['source']}")
+        print(f"       ↳ from: {m['source']}")
     print(sep)
-    logger.info(f"Rapport : {len(added)} ajoutés / {len(results)} proposés")
+    logger.info(f"Report: {len(added)} added / {len(results)} proposed")
 
 # =========================
 # MAIN
@@ -741,7 +735,7 @@ def print_report(results, added):
 def main():
     radarr = get_radarr_movies()
     if not radarr:
-        log("Impossible de joindre Radarr.", "ERROR")
+        log("Cannot reach Radarr.", "ERROR")
         return
 
     radarr_titles = {m["title"] for m in radarr}
@@ -751,7 +745,7 @@ def main():
     pool = [m for m in radarr if m.get("title")]
     random.shuffle(pool)
     sources = pool[:args.sources]
-    log(f"{len(sources)} films source sélectionnés")
+    log(f"{len(sources)} source films selected")
 
     all_results: dict[str, dict] = {}
 
@@ -762,22 +756,22 @@ def main():
 
         base = get_omdb_full(title)
         if not base:
-            log(f"OMDb KO pour '{title}'", "WARNING")
+            log(f"OMDb not found for '{title}' — skipped", "WARNING")
             continue
 
-        # Pré-calculer l'embedding du film source (mis en cache globalement)
+        # Pre-compute source film embedding (cached globally)
         if base.get("plot"):
             get_embedding(base["plot"])
 
         candidates = process_source(base, radarr_titles, radarr_tmdb)
-        log(f"→ {len(candidates)} candidats pour '{title}'")
+        log(f"→ {len(candidates)} candidates for '{title}'")
 
         for c in candidates:
             key = c["title"]
             if key not in all_results or c["score"] > all_results[key]["score"]:
                 all_results[key] = c
 
-    # Sélection finale avec diversité (max 2 par source)
+    # Final selection with diversity (max 2 per source film)
     sorted_all = sorted(all_results.values(), key=lambda x: x["score"], reverse=True)
     final = []
     source_count: dict[str, int] = {}
@@ -795,7 +789,7 @@ def main():
             if len(final) >= args.top:
                 break
 
-    # Sauvegarde JSON
+    # Save JSON output
     output = []
     for m in final:
         lk = m["lookup"]
@@ -814,22 +808,22 @@ def main():
     json_file = f"reco_{today_str}.json"
     with open(json_file, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=4, ensure_ascii=False)
-    log(f"Sauvegardé → {json_file}")
+    log(f"Results saved → {json_file}")
 
     if not output:
-        log("Aucune recommandation.", "WARNING")
+        log("No recommendations found.", "WARNING")
         return
 
     added = []
     if args.auto:
-        log(f"Mode AUTO — ajout de {len(output)} films", "INFO")
+        log(f"AUTO mode — adding {len(output)} films to Radarr", "INFO")
         for m in output:
             if add_to_radarr(m):
                 added.append(m["title"])
                 BLACKLIST.add(m["title"])
     else:
         print_report(final, added=[])
-        choice = input("\nAjouter ? (a=tout / o=un par un / n=non) : ").lower().strip()
+        choice = input("\nAdd to Radarr? (a=all / o=one by one / n=no): ").lower().strip()
         if choice == "a":
             for m in output:
                 if add_to_radarr(m):
@@ -837,7 +831,7 @@ def main():
                     BLACKLIST.add(m["title"])
         elif choice == "o":
             for m in output:
-                rep = input(f"  '{m['title']}' ({m['year']}) IMDb:{m['rating']} ? (y/n) : ").lower()
+                rep = input(f"  '{m['title']}' ({m['year']}) IMDb:{m['rating']} - add? (y/n): ").lower()
                 if rep == "y":
                     if add_to_radarr(m):
                         added.append(m["title"])
@@ -847,7 +841,7 @@ def main():
 
     print_report(final, added)
     save_blacklist(BLACKLIST)
-    log(f"Blacklist : {len(BLACKLIST)} titres | Log : {log_file}")
+    log(f"Blacklist: {len(BLACKLIST)} titles | Log: {log_file}")
 
 if __name__ == "__main__":
     main()
