@@ -1,9 +1,9 @@
-# Radarr Movie Recommender — Configuration
+﻿# Radarr Movie Recommender - Configuration
 # Copy this file to config.yaml and fill in your values
 
 # OMDb API keys (comma-separated)
 # Get free keys at https://www.omdbapi.com/apikey.aspx
-# Free tier = 1000 requests/day per key — add multiple keys for rotation
+# Free tier = 1000 requests/day per key - add multiple keys for rotation
 omdb_keys: your_key1,your_key2,your_key3
 
 # Radarr settings
