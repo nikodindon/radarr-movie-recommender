@@ -1,22 +1,30 @@
 # Radarr Movie Recommender
 
-A Python CLI script that uses a local LLM ([Ollama](https://ollama.com/)) to suggest movies based on your existing [Radarr](https://radarr.video/) library, then adds the best ones automatically.
+A Python CLI script that automatically finds movies similar to what you already have in [Radarr](https://radarr.video/), and adds the best ones directly to your library.
+
+Uses a local LLM ([Ollama](https://ollama.com/)) for suggestions, [OMDb](https://www.omdbapi.com/) for validation, and semantic plot embeddings for thematic similarity scoring.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 
 ---
 
+## Preview
+
+![Run preview](docs/preview.png)
+
+---
+
 ## What it does
 
-I built this as a personal project to discover films I might enjoy, based on what I already have in my library. It picks 10 random films from Radarr, asks a local LLM for similar suggestions, validates them against OMDb, scores them by thematic similarity, and optionally adds the top results to Radarr automatically.
+Each run, the script:
 
-The main components:
+1. Picks 10 random films from your Radarr library as source material
+2. Asks a local LLM to suggest similar films for each one
+3. Validates every suggestion against OMDb (rating, year, genre, not already in your library)
+4. Scores candidates using genre match, director, cast, and semantic plot similarity via embeddings
+5. Adds the top 10 results directly to Radarr, which starts downloading them
 
-- A **local LLM** (Ollama) generates suggestions -- no external AI API needed
-- **OMDb** validates each suggestion (rating, year, genre)
-- **Semantic plot embeddings** score thematic similarity
-- Everything integrates directly with **Radarr** via its API
-- Runs as a **single Python script** with no server or database required
+Everything runs locally. No external AI API, no Docker, no web UI — just a single Python script.
 
 ---
 
@@ -29,13 +37,13 @@ Your Radarr library (10 random films)
   Ollama generates 14 similar titles per film
            |
            v
-  OMDb validates: rating >= 6.5, year, genre, not junk
+  OMDb validates: rating, year, genre, not already owned
            |
            v
-  Semantic scoring: genre + director + cast + plot embeddings
+  Semantic scoring via plot embeddings + genre + director + cast
            |
            v
-  Top 10 candidates -> added to Radarr automatically
+  Top 10 candidates added to Radarr automatically
 ```
 
 **Scoring breakdown:**
@@ -48,29 +56,6 @@ Your Radarr library (10 random films)
 | Plot similarity (embeddings) | 0 to +6 |
 | IMDb rating | 0 to +3.3 |
 | Era proximity | +0.8 to +1.5 |
-
----
-
-## Example output
-
-```
-==========================================================================================
-  REPORT -- 2026-03-19 14:36 -- 10 recommendations
-==========================================================================================
-   1. [ADDED]    The Witch (2015) IMDb:7.0 score:16.8
-       from: The Lighthouse | genres:horror,drama, same_director, plot_sim:0.74
-
-   2. [proposed] Working Girl (1988) IMDb:6.8 score:13.07
-       from: Pretty Woman | genres:comedy,romance, plot_sim:0.88
-
-   3. [proposed] Mystic River (2003) IMDb:7.9 score:13.11
-       from: Zodiac | genres:crime,drama,mystery, plot_sim:0.75
-
-  STATS  |  sources: 10  |  suggestions: 132  |  tested: 47
-         |  rejected: 31 (rating:12 genre:8 bl:6 score:5)
-         |  selected: 16  |  added: 1
-==========================================================================================
-```
 
 ---
 
@@ -92,7 +77,7 @@ git clone https://github.com/nikodindon/radarr-movie-recommender.git
 cd radarr-movie-recommender
 ```
 
-**2. Install Python dependencies**
+**2. Install dependencies**
 
 ```bash
 pip install -r requirements.txt
@@ -105,8 +90,6 @@ ollama pull llama3.1:8b
 ```
 
 **4. Configure**
-
-Copy the example config and fill in your values:
 
 ```bash
 copy config.yaml.example config.yaml   # Windows
@@ -125,19 +108,19 @@ ollama_model: llama3.1:8b
 
 > Get free OMDb keys at [omdbapi.com/apikey.aspx](https://www.omdbapi.com/apikey.aspx).
 > Find your Radarr API key in Radarr -> Settings -> General.
-> The `config.yaml` file is gitignored and never committed.
+> `config.yaml` is gitignored and never committed.
 
 ---
 
 ## Usage
 
-**Interactive mode** — review and pick which films to add:
+**Interactive mode** -- review and choose which films to add:
 
 ```bash
 python newmovies.py
 ```
 
-**Automatic mode** — finds and adds the top 10 films with no prompts:
+**Automatic mode** -- finds and adds the top 10 with no prompts:
 
 ```bash
 python newmovies.py --auto
@@ -147,7 +130,7 @@ python newmovies.py --auto
 
 | Argument | Default | Description |
 |---|---|---|
-| `--auto` | off | Add all recommendations automatically |
+| `--auto` | off | Add all recommendations without prompting |
 | `--sources` | 10 | Number of random source films to sample |
 | `--suggestions` | 14 | Ollama suggestions per source film |
 | `--top` | 10 | Final recommendations to keep |
@@ -160,9 +143,9 @@ python newmovies.py --auto
 
 ---
 
-## Daily automation (Windows Task Scheduler)
+## Daily automation (Windows)
 
-Run automatically every day with PowerShell:
+Set it up once with PowerShell and wake up to 10 new movies every morning:
 
 ```powershell
 $action = New-ScheduledTaskAction `
@@ -179,21 +162,16 @@ Register-ScheduledTask -TaskName "RadarrRecommender" `
 
 | File | Description |
 |---|---|
-| `blacklist.json` | All films already proposed, added, or in your library. Never re-proposed. |
-| `omdb_apikey.conf` | Currently active OMDb key (auto-rotated when quota is hit) |
+| `blacklist.json` | All films already proposed, added, or in your library -- never re-proposed |
+| `omdb_apikey.conf` | Currently active OMDb key (auto-rotated on quota) |
 | `reco_YYYYMMDD_HHMM.json` | Full scored results of each run |
 | `logs/reco_YYYYMMDD_HHMM.log` | Detailed log with all decisions |
 
 ---
 
-## How the blacklist works
+## Notes
 
-Every film that passes through the system is added to `blacklist.json`:
-
-- Films **already in your Radarr library** are added on startup
-- Films **proposed and added** are blacklisted after the run
-- Films **manually declined** (in interactive mode) are also blacklisted
-
-This means each daily run discovers genuinely new films.
-
-
+- The blacklist grows over time -- films already in your library or previously proposed are never suggested again
+- If Ollama returns too few results for a source film, the script falls back to OMDb search by director/genre/cast
+- The `--no-embed` flag disables semantic embeddings if you want faster runs at the cost of some precision
+- Works on Windows, Linux and Mac
