@@ -1,5 +1,5 @@
 @"
-# 🎬 Radarr Movie Recommender
+# ðŸŽ¬ Radarr Movie Recommender
 
 Automatic daily movie recommendation engine for [Radarr](https://radarr.video/).
 
@@ -8,14 +8,14 @@ Uses your existing Radarr library as a source, generates similar movie suggestio
 ## How it works
 ``````
 10 random films from your Radarr library
-        ↓
+        â†“
 Ollama (llama3.1:8b) generates similar titles
-        ↓
+        â†“
 OMDb validates each title (rating, year, genre filters)
-        ↓
+        â†“
 Semantic similarity via Ollama embeddings
-        ↓
-Top 10 scored candidates → added to Radarr
+        â†“
+Top 10 scored candidates â†’ added to Radarr
 ``````
 
 ## Requirements
@@ -43,12 +43,12 @@ pip install -r requirements.txt
 ollama pull llama3.1:8b
 ``````
 
-**4. Edit configuration** — open ``newmovies.py`` and set these values at the top:
+**4. Edit configuration** â€” open ``newmovies.py`` and set these values at the top:
 
 | Variable | Description |
 |---|---|
 | ``OMDB_KEYS`` | List of your OMDb API keys |
-| ``RADARR_API_KEY`` | Found in Radarr → Settings → General |
+| ``RADARR_API_KEY`` | Found in Radarr â†’ Settings â†’ General |
 | ``RADARR_URL`` | Default: ``http://localhost:7878/api/v3`` |
 | ``ROOT_FOLDER`` | Your movies folder path, e.g. ``D:\Movies`` |
 | ``OLLAMA_MODEL`` | Default: ``llama3.1:8b`` |
@@ -117,13 +117,13 @@ Films already in your Radarr library and previously proposed films are automatic
 
 ## Example output
 ``````
-  1. [✅ ADDED]  In the Mouth of Madness (1994) IMDb:7.1 score:15.19
-      ↳ genres:horror, same_director, plot_sim:0.75
-      ↳ from: The Thing
+  1. [âœ… ADDED]  In the Mouth of Madness (1994) IMDb:7.1 score:15.19
+      â†³ genres:horror, same_director, plot_sim:0.75
+      â†³ from: The Thing
 
-  2. [📋 proposed] Mystic River (2003) IMDb:7.9 score:13.11
-      ↳ genres:crime,drama,mystery, plot_sim:0.75
-      ↳ from: Zodiac
+  2. [ðŸ“‹ proposed] Mystic River (2003) IMDb:7.9 score:13.11
+      â†³ genres:crime,drama,mystery, plot_sim:0.75
+      â†³ from: Zodiac
 ``````
 
 ## License
