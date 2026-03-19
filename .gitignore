@@ -1,0 +1,19 @@
+@"
+# Fichiers de config locaux
+omdb_apikey.conf
+blacklist.json
+
+# Logs et résultats
+logs/
+reco_*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Windows
+Thumbs.db
+desktop.ini
+"@ | Out-File -FilePath .gitignore -Encoding utf8
