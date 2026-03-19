@@ -1,9 +1,8 @@
-@"
 # Fichiers de config locaux
 omdb_apikey.conf
 blacklist.json
 
-# Logs et résultats
+# Logs et resultats
 logs/
 reco_*.json
 
@@ -11,9 +10,10 @@ reco_*.json
 __pycache__/
 *.pyc
 *.pyo
+
+# Variables d'environnement
 .env
 
 # Windows
 Thumbs.db
 desktop.ini
-"@ | Out-File -FilePath .gitignore -Encoding utf8
