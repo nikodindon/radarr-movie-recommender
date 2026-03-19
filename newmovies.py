@@ -23,21 +23,45 @@ import random
 import subprocess
 import time
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote
 
 # =========================
-# CONFIG
+# CHARGEMENT .env
 # =========================
-OMDB_KEYS = [
-    "a3421245", "7cb5ef5e", "7af0a4d6", "a71cf41b", "14340dd2"
-]
+def _load_env():
+    """Charge les variables depuis un fichier .env si présent."""
+    env_file = Path(__file__).parent / ".env"
+    if env_file.exists():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+
+_load_env()
+
+# =========================
+# CONFIG — lue depuis .env ou valeurs par défaut
+# =========================
+_omdb_raw = os.environ.get("OMDB_KEYS", "")
+OMDB_KEYS = [k.strip() for k in _omdb_raw.split(",") if k.strip()]
+if not OMDB_KEYS:
+    print("[ERROR] Aucune clé OMDb trouvée. Vérifie ton fichier .env (OMDB_KEYS=clé1,clé2,...)")
+    exit(1)
+
+RADARR_API_KEY   = os.environ.get("RADARR_API_KEY", "")
+RADARR_URL       = os.environ.get("RADARR_URL",     "http://localhost:7878/api/v3")
+ROOT_FOLDER      = os.environ.get("ROOT_FOLDER",    "F:\\Movies")
+OLLAMA_MODEL     = os.environ.get("OLLAMA_MODEL",   "llama3.1:8b")
+
+if not RADARR_API_KEY:
+    print("[ERROR] RADARR_API_KEY manquante. Vérifie ton fichier .env")
+    exit(1)
+
 CONFIG_FILE      = "omdb_apikey.conf"
 BLACKLIST_FILE   = "blacklist.json"
-RADARR_API_KEY   = "d04fcfd4117e4e48b7b1da6ef9492dc7"
-RADARR_URL       = "http://localhost:7878/api/v3"
-ROOT_FOLDER      = "F:\\Movies"
-OLLAMA_MODEL     = "llama3.1:8b"
-OLLAMA_EMBED_URL = "http://localhost:11434/api/embeddings"
+OLLAMA_EMBED_URL = f"http://localhost:11434/api/embeddings"
 LOG_DIR          = "logs"
 
 # Genres adjacents — si un film source a peu de candidats,
