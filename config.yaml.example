@@ -1,4 +1,4 @@
-﻿# Radarr Movie Recommender - Configuration
+# Radarr Movie Recommender - Configuration
 # Copy this file to config.yaml and fill in your values
 
 # OMDb API keys (comma-separated)
@@ -11,6 +11,15 @@ omdb_keys: your_key1,your_key2,your_key3
 radarr_api_key: your_radarr_api_key
 radarr_url: http://localhost:7878/api/v3
 root_folder: "F:\\Movies"
+
+# Quality profile ID to use when adding films to Radarr
+# Find your profile IDs in Radarr -> Settings -> Profiles
+# Common values: 1=Any, 4=HD-720p, 5=HD-1080p, 6=720p/1080p custom
+quality_profile_id: 6
+
+# Minimum availability before Radarr starts searching
+# Options: announced, inCinemas, released, tba
+minimum_availability: announced
 
 # Ollama model to use for suggestions and embeddings
 # Run "ollama pull llama3.1:8b" to download

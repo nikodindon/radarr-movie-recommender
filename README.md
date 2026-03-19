@@ -139,6 +139,7 @@ python newmovies.py --auto
 | `--sd` | 1970 | Minimum release year |
 | `--fd` | 2030 | Maximum release year |
 | `--no-embed` | off | Disable plot embeddings (faster, less precise) |
+| `--genre` | off | Filter by genre (e.g. `Sci-Fi`, `Horror`, `Comedy,Romance`) |
 | `--debug` | off | Verbose output |
 
 ---

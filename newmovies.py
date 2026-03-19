@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-newmovies_v14.py -- Radarr Movie Recommender
+newmovies_v16.py -- Radarr Movie Recommender
 
-v14 changes:
-- ANSI color fix for Windows PowerShell (no more [0m artifacts)
-- Redesigned console: structured blocks, aligned columns
-- UTF-8 stdout fix for Windows
-- config.yaml support + run statistics
+v16 changes:
+- quality_profile_id configurable in config.yaml
+- minimum_availability configurable in config.yaml
 """
 
 import sys
@@ -41,11 +39,13 @@ def _load_config():
         with open(cfg_file, encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
         return {
-            "OMDB_KEYS":      [k.strip() for k in str(cfg.get("omdb_keys", "")).split(",") if k.strip()],
-            "RADARR_API_KEY": str(cfg.get("radarr_api_key", "")),
-            "RADARR_URL":     str(cfg.get("radarr_url",     "http://localhost:7878/api/v3")),
-            "ROOT_FOLDER":    str(cfg.get("root_folder",    "F:\\Movies")),
-            "OLLAMA_MODEL":   str(cfg.get("ollama_model",   "llama3.1:8b")),
+            "OMDB_KEYS":           [k.strip() for k in str(cfg.get("omdb_keys", "")).split(",") if k.strip()],
+            "RADARR_API_KEY":      str(cfg.get("radarr_api_key", "")),
+            "RADARR_URL":          str(cfg.get("radarr_url",     "http://localhost:7878/api/v3")),
+            "ROOT_FOLDER":         str(cfg.get("root_folder",    "F:\\Movies")),
+            "OLLAMA_MODEL":        str(cfg.get("ollama_model",   "llama3.1:8b")),
+            "QUALITY_PROFILE_ID":  int(cfg.get("quality_profile_id", 1)),
+            "MINIMUM_AVAILABILITY":str(cfg.get("minimum_availability", "announced")),
         }
     env_file = base / ".env"
     if env_file.exists():
@@ -56,19 +56,23 @@ def _load_config():
                 os.environ.setdefault(k.strip(), v.strip())
     omdb_raw = os.environ.get("OMDB_KEYS", "")
     return {
-        "OMDB_KEYS":      [k.strip() for k in omdb_raw.split(",") if k.strip()],
-        "RADARR_API_KEY": os.environ.get("RADARR_API_KEY", ""),
-        "RADARR_URL":     os.environ.get("RADARR_URL",     "http://localhost:7878/api/v3"),
-        "ROOT_FOLDER":    os.environ.get("ROOT_FOLDER",    "F:\\Movies"),
-        "OLLAMA_MODEL":   os.environ.get("OLLAMA_MODEL",   "llama3.1:8b"),
+        "OMDB_KEYS":           [k.strip() for k in omdb_raw.split(",") if k.strip()],
+        "RADARR_API_KEY":      os.environ.get("RADARR_API_KEY", ""),
+        "RADARR_URL":          os.environ.get("RADARR_URL",     "http://localhost:7878/api/v3"),
+        "ROOT_FOLDER":         os.environ.get("ROOT_FOLDER",    "F:\\Movies"),
+        "OLLAMA_MODEL":        os.environ.get("OLLAMA_MODEL",   "llama3.1:8b"),
+        "QUALITY_PROFILE_ID":  int(os.environ.get("QUALITY_PROFILE_ID", "1")),
+        "MINIMUM_AVAILABILITY":os.environ.get("MINIMUM_AVAILABILITY", "announced"),
     }
 
 _cfg           = _load_config()
-OMDB_KEYS      = _cfg["OMDB_KEYS"]
-RADARR_API_KEY = _cfg["RADARR_API_KEY"]
-RADARR_URL     = _cfg["RADARR_URL"]
-ROOT_FOLDER    = _cfg["ROOT_FOLDER"]
-OLLAMA_MODEL   = _cfg["OLLAMA_MODEL"]
+OMDB_KEYS            = _cfg["OMDB_KEYS"]
+RADARR_API_KEY       = _cfg["RADARR_API_KEY"]
+RADARR_URL           = _cfg["RADARR_URL"]
+ROOT_FOLDER          = _cfg["ROOT_FOLDER"]
+OLLAMA_MODEL         = _cfg["OLLAMA_MODEL"]
+QUALITY_PROFILE_ID   = _cfg["QUALITY_PROFILE_ID"]
+MINIMUM_AVAILABILITY = _cfg["MINIMUM_AVAILABILITY"]
 
 if not OMDB_KEYS:
     print("[ERROR] No OMDb key found. Check config.yaml (OMDB_KEYS=key1,key2,...)")
@@ -104,7 +108,7 @@ ADJACENT_GENRES = {
 # =========================
 # ARGUMENTS
 # =========================
-parser = argparse.ArgumentParser(description="Radarr Movie Recommender v14")
+parser = argparse.ArgumentParser(description="Radarr Movie Recommender v16")
 parser.add_argument("--sd",          type=int,   default=1970)
 parser.add_argument("--fd",          type=int,   default=2030)
 parser.add_argument("--score",       type=float, default=6.5)
@@ -115,6 +119,8 @@ parser.add_argument("--top",         type=int,   default=10)
 parser.add_argument("--auto",        action="store_true")
 parser.add_argument("--no-embed",    action="store_true")
 parser.add_argument("--debug",       action="store_true")
+parser.add_argument("--genre",        type=str, default=None,
+    help="Filter by genre (e.g. Comedy, Sci-Fi, Horror). Comma-separated for multiple.")
 args = parser.parse_args()
 
 # =========================
@@ -163,12 +169,15 @@ def log(msg, level="INFO"):
     print(f"{color}{tag} {msg}{reset}")
     getattr(logger, level.lower() if level in ("DEBUG","INFO","WARNING","ERROR") else "info")(msg)
 
-def print_header(blacklist_size=0):
+def print_header(blacklist_size=0, genre_filter=None):
     w   = 70
     now = datetime.now().strftime("%Y-%m-%d  %H:%M")
     cprint("=" * w, "white", bold=True)
-    cprint(f"  RADARR MOVIE RECOMMENDER  v14          {now}", "white", bold=True)
+    cprint(f"  RADARR MOVIE RECOMMENDER  v16          {now}", "white", bold=True)
     cprint(f"  Model: {OLLAMA_MODEL:<20} Blacklist: {blacklist_size} titles", "gray")
+    cprint(f"  Quality profile: {QUALITY_PROFILE_ID:<10} Availability: {MINIMUM_AVAILABILITY}", "gray")
+    if genre_filter:
+        cprint(f"  Genre filter: {genre_filter}", "cyan")
     cprint("=" * w, "white", bold=True)
     print()
 
@@ -399,15 +408,16 @@ def get_radarr_lookup(title, year=None):
 
 def add_to_radarr(movie):
     payload = {
-        "title":            movie["title"],
-        "qualityProfileId": 1,
-        "tmdbId":           movie["tmdbId"],
-        "titleSlug":        movie["titleSlug"],
-        "images":           movie.get("images", []),
-        "year":             movie["year"],
-        "rootFolderPath":   ROOT_FOLDER,
-        "monitored":        True,
-        "addOptions":       {"searchForMovie": True}
+        "title":               movie["title"],
+        "qualityProfileId":    QUALITY_PROFILE_ID,
+        "tmdbId":              movie["tmdbId"],
+        "titleSlug":           movie["titleSlug"],
+        "images":              movie.get("images", []),
+        "year":                movie["year"],
+        "rootFolderPath":      ROOT_FOLDER,
+        "monitored":           True,
+        "minimumAvailability": MINIMUM_AVAILABILITY,
+        "addOptions":          {"searchForMovie": True}
     }
     try:
         r = requests.post(
@@ -557,6 +567,10 @@ def _parse_ollama_titles(raw: str) -> list:
 def ollama_suggest_titles(base: dict) -> list:
     if not OLLAMA_OK:
         return []
+    genre_instruction = (
+        f'- Suggestions MUST be {args.genre} films\n'
+        if args.genre else ""
+    )
     prompt = (
         f'You are a film expert with encyclopedic knowledge of world cinema.\n\n'
         f'Source film: "{base["title"]}" ({base["year"]})\n'
@@ -571,8 +585,9 @@ def ollama_suggest_titles(base: dict) -> list:
         f'- No direct sequels/prequels of the source film\n'
         f'- Vary the eras\n'
         f'- Use exact English/international theatrical title\n'
-        f'- Do NOT include the source film itself\n\n'
-        f'Respond ONLY with valid JSON:\n'
+        f'- Do NOT include the source film itself\n'
+        f'{genre_instruction}'
+        f'\nRespond ONLY with valid JSON:\n'
         f'{{"films": ["Title 1", "Title 2", ...]}}'
     )
     cprint(f"  [Ollama] Generating suggestions...", "magenta")
@@ -616,6 +631,21 @@ def fallback_omdb_search(base: dict) -> list:
     log(f"Fallback: {len(found)} raw candidates found", "FALLBACK")
     return found
 
+def _build_target_genres(genre_arg: str) -> set:
+    """Build a set of target genres including aliases (sci-fi <-> science fiction etc.)."""
+    ALIASES = {
+        "sci-fi":           "science fiction",
+        "scifi":            "science fiction",
+        "sf":               "science fiction",
+        "science fiction":  "sci-fi",
+    }
+    result = set()
+    for g in genre_arg.split(","):
+        g = g.strip().lower()
+        result.add(g)
+        result.add(ALIASES.get(g, g))
+    return result
+
 # =========================
 # CANDIDATE VALIDATION
 # =========================
@@ -647,6 +677,15 @@ def validate_candidate(raw_title, base, radarr_titles, radarr_tmdb, relaxed=Fals
             RUN_STATS["filtered_genre"] += 1
         log(f"  Filtered out: {omdb['title']} (IMDb:{omdb['rating']} {omdb['year']})", "DEBUG")
         return None
+
+    # Extra genre filter when --genre is active
+    if args.genre:
+        target_genres = _build_target_genres(args.genre)
+        cand_genres   = {g.strip().lower() for g in omdb["genre"].split(",")}
+        if not target_genres & cand_genres:
+            RUN_STATS["filtered_genre"] += 1
+            log(f"  Filtered out (genre mismatch): {omdb['title']}", "DEBUG")
+            return None
     sc, reasons = score_candidate(base, omdb, relaxed=relaxed)
     min_sc = 3.5 if relaxed else 4.0
     if sc < min_sc:
@@ -773,8 +812,32 @@ def main():
     radarr_titles = {m["title"] for m in radarr}
     radarr_tmdb   = {m.get("tmdbId") for m in radarr if m.get("tmdbId")}
     BLACKLIST.update(radarr_titles)
-    print_header(len(BLACKLIST))
+    print_header(len(BLACKLIST), genre_filter=args.genre)
+
+    # Build source pool — filter by genre if --genre is specified
     pool = [m for m in radarr if m.get("title")]
+    if args.genre:
+        target_genres = _build_target_genres(args.genre)
+        filtered_pool = [
+            m for m in pool
+            if any(
+                g.lower() in target_genres
+                for g in m.get("genres", [])
+            )
+        ]
+        if not filtered_pool:
+            log(f"No films found in your library for genre: {args.genre}", "WARNING")
+            log("Available genres in your library:", "INFO")
+            all_genres = sorted({
+                g for m in pool
+                for g in m.get("genres", [])
+                if g
+            })
+            cprint(f"  {', '.join(all_genres)}", "cyan")
+            return
+        log(f"Genre filter '{args.genre}': {len(filtered_pool)} matching films in library", "INFO")
+        pool = filtered_pool
+
     random.shuffle(pool)
     sources = pool[:args.sources]
     log(f"{len(sources)} source films selected from your library")
@@ -785,6 +848,15 @@ def main():
         if not base:
             log(f"OMDb not found for '{title}' -- skipped", "WARNING")
             continue
+
+        # If --genre is active, verify the source film actually matches via OMDb
+        if args.genre:
+            target_genres  = _build_target_genres(args.genre)
+            omdb_genres    = {g.strip().lower() for g in base.get("genre", "").split(",")}
+            if not target_genres & omdb_genres:
+                log(f"Source '{title}' skipped (OMDb genre mismatch: {base.get('genre','')})", "DEBUG")
+                continue
+
         print_source_header(i + 1, len(sources), title, base.get("genre", ""))
         RUN_STATS["sources_processed"] += 1
         if base.get("plot"):
