@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-newmovies_v12.py — Radarr Movie Recommender
+newmovies_v13.py — Radarr Movie Recommender
 
-v12 changes:
-- All log messages in English
-- TV Movie, TV Series, Mini-Series added to BAD_GENRES filter
+v13 changes:
+- config.yaml support (replaces .env)
+- Run statistics: candidates tested / rejected / added
+- Improved report with stats summary
 """
 
 import requests
@@ -22,12 +23,36 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
+# Optional yaml support — falls back to .env if PyYAML not installed
+try:
+    import yaml
+    YAML_AVAILABLE = True
+except ImportError:
+    YAML_AVAILABLE = False
+
 # =========================
-# CHARGEMENT .env
+# CONFIG LOADING
+# Priority: config.yaml > .env > defaults
 # =========================
-def _load_env():
-    """Load variables from .env file if present."""
-    env_file = Path(__file__).parent / ".env"
+def _load_config():
+    """Load configuration from config.yaml or .env fallback."""
+    base = Path(__file__).parent
+
+    # Try config.yaml first
+    cfg_file = base / "config.yaml"
+    if cfg_file.exists() and YAML_AVAILABLE:
+        with open(cfg_file, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        return {
+            "OMDB_KEYS":      [k.strip() for k in str(cfg.get("omdb_keys", "")).split(",") if k.strip()],
+            "RADARR_API_KEY": str(cfg.get("radarr_api_key", "")),
+            "RADARR_URL":     str(cfg.get("radarr_url",     "http://localhost:7878/api/v3")),
+            "ROOT_FOLDER":    str(cfg.get("root_folder",    "F:\\Movies")),
+            "OLLAMA_MODEL":   str(cfg.get("ollama_model",   "llama3.1:8b")),
+        }
+
+    # Fallback: .env file
+    env_file = base / ".env"
     if env_file.exists():
         for line in env_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -35,24 +60,28 @@ def _load_env():
                 k, v = line.split("=", 1)
                 os.environ.setdefault(k.strip(), v.strip())
 
-_load_env()
+    omdb_raw = os.environ.get("OMDB_KEYS", "")
+    return {
+        "OMDB_KEYS":      [k.strip() for k in omdb_raw.split(",") if k.strip()],
+        "RADARR_API_KEY": os.environ.get("RADARR_API_KEY", ""),
+        "RADARR_URL":     os.environ.get("RADARR_URL",     "http://localhost:7878/api/v3"),
+        "ROOT_FOLDER":    os.environ.get("ROOT_FOLDER",    "F:\\Movies"),
+        "OLLAMA_MODEL":   os.environ.get("OLLAMA_MODEL",   "llama3.1:8b"),
+    }
 
-# =========================
-# CONFIG — read from .env or defaults
-# =========================
-_omdb_raw = os.environ.get("OMDB_KEYS", "")
-OMDB_KEYS = [k.strip() for k in _omdb_raw.split(",") if k.strip()]
+_cfg = _load_config()
+
+OMDB_KEYS      = _cfg["OMDB_KEYS"]
+RADARR_API_KEY = _cfg["RADARR_API_KEY"]
+RADARR_URL     = _cfg["RADARR_URL"]
+ROOT_FOLDER    = _cfg["ROOT_FOLDER"]
+OLLAMA_MODEL   = _cfg["OLLAMA_MODEL"]
+
 if not OMDB_KEYS:
-    print("[ERROR] No OMDb key found. Check your .env file (OMDB_KEYS=key1,key2,...)")
+    print("[ERROR] No OMDb key found. Check config.yaml or .env (OMDB_KEYS=key1,key2,...)")
     exit(1)
-
-RADARR_API_KEY   = os.environ.get("RADARR_API_KEY", "")
-RADARR_URL       = os.environ.get("RADARR_URL",     "http://localhost:7878/api/v3")
-ROOT_FOLDER      = os.environ.get("ROOT_FOLDER",    "F:\\Movies")
-OLLAMA_MODEL     = os.environ.get("OLLAMA_MODEL",   "llama3.1:8b")
-
 if not RADARR_API_KEY:
-    print("[ERROR] RADARR_API_KEY missing. Check your .env file")
+    print("[ERROR] RADARR_API_KEY missing. Check config.yaml or .env")
     exit(1)
 
 CONFIG_FILE      = "omdb_apikey.conf"
@@ -213,6 +242,21 @@ log(f"Ollama {'ready' if OLLAMA_OK else 'UNAVAILABLE'}",
 # =========================
 OMDB_CACHE      = {}
 EMBEDDING_CACHE = {}  # shared globally across all source films
+
+# =========================
+# RUN STATISTICS
+# =========================
+RUN_STATS = {
+    "sources_processed": 0,
+    "ollama_suggestions": 0,
+    "candidates_tested":  0,
+    "filtered_rating":    0,
+    "filtered_genre":     0,
+    "filtered_blacklist": 0,
+    "filtered_score":     0,
+    "selected":           0,
+    "added":              0,
+}
 
 # =========================
 # OMDb
@@ -611,7 +655,9 @@ def validate_candidate(raw_title, base, radarr_titles, radarr_tmdb,
         return None
     if title.lower() == base["title"].lower():
         return None
+    RUN_STATS["candidates_tested"] += 1
     if title in BLACKLIST or title in radarr_titles:
+        RUN_STATS["filtered_blacklist"] += 1
         log(f"  Skip (blacklist/Radarr): {title}", "DEBUG")
         return None
     if is_junk(title):
@@ -627,12 +673,17 @@ def validate_candidate(raw_title, base, radarr_titles, radarr_tmdb,
         log(f"  Skip (blacklist/Radarr OMDb title): {omdb['title']}", "DEBUG")
         return None
     if not is_valid_candidate(omdb, min_score=min_score):
+        if omdb["rating"] < (args.score_relax if relaxed else args.score):
+            RUN_STATS["filtered_rating"] += 1
+        else:
+            RUN_STATS["filtered_genre"] += 1
         log(f"  Filtered out: {omdb['title']} (IMDb:{omdb['rating']} {omdb['year']})", "DEBUG")
         return None
 
     sc, reasons = score_candidate(base, omdb, relaxed=relaxed)
     min_sc = 3.5 if relaxed else 4.0
     if sc < min_sc:
+        RUN_STATS["filtered_score"] += 1
         log(f"  Score too low: {omdb['title']} → {sc}", "DEBUG")
         return None
 
@@ -644,6 +695,7 @@ def validate_candidate(raw_title, base, radarr_titles, radarr_tmdb,
         log(f"  Already in Radarr (tmdbId): {omdb['title']}", "DEBUG")
         return None
 
+    RUN_STATS["selected"] += 1
     log(f"  ✓ {omdb['title']} ({omdb['year']}) IMDb:{omdb['rating']} "
         f"score:{sc} [{', '.join(reasons)}]{'  [RELAX]' if relaxed else ''}", "SELECT")
 
@@ -675,6 +727,7 @@ def process_source(base: dict, radarr_titles: set, radarr_tmdb: set) -> list[dic
                 suggested.append(t)
                 seen.add(t.lower())
 
+    RUN_STATS["ollama_suggestions"] += len(suggested)
     log(f"Validating {len(suggested)} titles...", "INFO")
 
     # 2. Normal pass
@@ -716,7 +769,7 @@ def process_source(base: dict, radarr_titles: set, radarr_tmdb: set) -> list[dic
 def print_report(results, added):
     sep = "=" * 90
     print(f"\n{sep}")
-    print(f"  REPORT — {datetime.now().strftime('%Y-%m-%d %H:%M')} — {len(results)} films")
+    print(f"  REPORT — {datetime.now().strftime('%Y-%m-%d %H:%M')} — {len(results)} recommendations")
     print(sep)
     for i, m in enumerate(results, 1):
         tag = "✅ ADDED" if m["title"] in added else "📋 proposed"
@@ -727,7 +780,25 @@ def print_report(results, added):
         print(f"       ↳ {rsn}")
         print(f"       ↳ from: {m['source']}")
     print(sep)
-    logger.info(f"Report: {len(added)} added / {len(results)} proposed")
+    # Run statistics
+    tested   = RUN_STATS["candidates_tested"]
+    rejected = (RUN_STATS["filtered_rating"] + RUN_STATS["filtered_genre"]
+                + RUN_STATS["filtered_blacklist"] + RUN_STATS["filtered_score"])
+    print(f"  STATS  |  sources: {RUN_STATS['sources_processed']}  "
+          f"|  suggestions: {RUN_STATS['ollama_suggestions']}  "
+          f"|  tested: {tested}  "
+          f"|  rejected: {rejected}  "
+          f"(rating:{RUN_STATS['filtered_rating']} "
+          f"genre:{RUN_STATS['filtered_genre']} "
+          f"bl:{RUN_STATS['filtered_blacklist']} "
+          f"score:{RUN_STATS['filtered_score']})  "
+          f"|  selected: {RUN_STATS['selected']}  "
+          f"|  added: {RUN_STATS['added']}")
+    print(sep)
+    logger.info(
+        f"Report: {len(added)} added / {len(results)} proposed | "
+        f"tested:{tested} rejected:{rejected} selected:{RUN_STATS['selected']}"
+    )
 
 # =========================
 # MAIN
@@ -760,6 +831,7 @@ def main():
             continue
 
         # Pre-compute source film embedding (cached globally)
+        RUN_STATS["sources_processed"] += 1
         if base.get("plot"):
             get_embedding(base["plot"])
 
@@ -820,6 +892,7 @@ def main():
         for m in output:
             if add_to_radarr(m):
                 added.append(m["title"])
+                RUN_STATS["added"] += 1
                 BLACKLIST.add(m["title"])
     else:
         print_report(final, added=[])
@@ -828,6 +901,7 @@ def main():
             for m in output:
                 if add_to_radarr(m):
                     added.append(m["title"])
+                    RUN_STATS["added"] += 1
                     BLACKLIST.add(m["title"])
         elif choice == "o":
             for m in output:

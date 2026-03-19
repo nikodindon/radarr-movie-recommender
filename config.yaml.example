@@ -1,0 +1,17 @@
+# Radarr Movie Recommender — Configuration
+# Copy this file to config.yaml and fill in your values
+
+# OMDb API keys (comma-separated)
+# Get free keys at https://www.omdbapi.com/apikey.aspx
+# Free tier = 1000 requests/day per key — add multiple keys for rotation
+omdb_keys: your_key1,your_key2,your_key3
+
+# Radarr settings
+# Find your API key in Radarr -> Settings -> General
+radarr_api_key: your_radarr_api_key
+radarr_url: http://localhost:7878/api/v3
+root_folder: "F:\\Movies"
+
+# Ollama model to use for suggestions and embeddings
+# Run "ollama pull llama3.1:8b" to download
+ollama_model: llama3.1:8b

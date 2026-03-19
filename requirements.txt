@@ -1,3 +1,4 @@
 @"
 requests
 "@ | Out-File -FilePath requirements.txt -Encoding utf8
+pyyaml
