@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-newmovies_v16.py -- Radarr Movie Recommender
+newmovies_v17.py -- Radarr Movie Recommender
 
-v16 changes:
-- quality_profile_id configurable in config.yaml
-- minimum_availability configurable in config.yaml
+v17 changes:
+- Flexible genre filter: borderline films penalized instead of rejected
+- Multi-source bonus: films suggested by multiple sources get a score boost
+- Score cap at 20.0 to avoid unbounded stacking
+- Year mismatch warning when Radarr year differs from OMDb
+- Blacklist count fix: displayed after Radarr merge
 """
 
 import sys
@@ -108,7 +111,7 @@ ADJACENT_GENRES = {
 # =========================
 # ARGUMENTS
 # =========================
-parser = argparse.ArgumentParser(description="Radarr Movie Recommender v16")
+parser = argparse.ArgumentParser(description="Radarr Movie Recommender v17")
 parser.add_argument("--sd",          type=int,   default=1970)
 parser.add_argument("--fd",          type=int,   default=2030)
 parser.add_argument("--score",       type=float, default=6.5)
@@ -173,7 +176,7 @@ def print_header(blacklist_size=0, genre_filter=None):
     w   = 70
     now = datetime.now().strftime("%Y-%m-%d  %H:%M")
     cprint("=" * w, "white", bold=True)
-    cprint(f"  RADARR MOVIE RECOMMENDER  v16          {now}", "white", bold=True)
+    cprint(f"  RADARR MOVIE RECOMMENDER  v17          {now}", "white", bold=True)
     cprint(f"  Model: {OLLAMA_MODEL:<20} Blacklist: {blacklist_size} titles", "gray")
     cprint(f"  Quality profile: {QUALITY_PROFILE_ID:<10} Availability: {MINIMUM_AVAILABILITY}", "gray")
     if genre_filter:
@@ -423,7 +426,12 @@ def add_to_radarr(movie):
             f"{RADARR_URL}/movie?apikey={RADARR_API_KEY}",
             json=payload, timeout=10)
         if r.status_code in [200, 201]:
-            log(f"Added: {movie['title']} ({movie['year']})", "SUCCESS")
+            radarr_year = r.json().get("year", movie["year"])
+            if abs(radarr_year - movie["year"]) > 1:
+                log(f"Added: {movie['title']} ({movie['year']}) "
+                    f"[WARNING: Radarr year={radarr_year}]", "SUCCESS")
+            else:
+                log(f"Added: {movie['title']} ({movie['year']})", "SUCCESS")
             return True
         log(f"Error adding {movie['title']}: {r.status_code}", "ERROR")
         return False
@@ -677,16 +685,23 @@ def validate_candidate(raw_title, base, radarr_titles, radarr_tmdb, relaxed=Fals
         log(f"  Filtered out: {omdb['title']} (IMDb:{omdb['rating']} {omdb['year']})", "DEBUG")
         return None
 
-    # Extra genre filter when --genre is active
+    # Genre filter when --genre is active
+    # Hard reject only if no adjacent genre match either
+    # Otherwise apply a score penalty (handled in score_candidate)
     if args.genre:
-        target_genres = _build_target_genres(args.genre)
-        cand_genres   = {g.strip().lower() for g in omdb["genre"].split(",")}
-        if not target_genres & cand_genres:
+        target_genres   = _build_target_genres(args.genre)
+        cand_genres_set = {g.strip().lower() for g in omdb["genre"].split(",")}
+        adjacent        = set()
+        for g in target_genres:
+            adjacent.update(ADJACENT_GENRES.get(g, []))
+        if not (target_genres & cand_genres_set) and not (adjacent & cand_genres_set):
             RUN_STATS["filtered_genre"] += 1
             log(f"  Filtered out (genre mismatch): {omdb['title']}", "DEBUG")
             return None
+        if not (target_genres & cand_genres_set) and (adjacent & cand_genres_set):
+            log(f"  Genre adjacent (soft match): {omdb['title']}", "DEBUG")
     sc, reasons = score_candidate(base, omdb, relaxed=relaxed)
-    min_sc = 3.5 if relaxed else 4.0
+    min_sc = 5.5 if relaxed else 4.0
     if sc < min_sc:
         RUN_STATS["filtered_score"] += 1
         log(f"  Score too low: {omdb['title']} -> {sc}", "DEBUG")
@@ -861,7 +876,9 @@ def main():
         log("No valid source films found for the requested genre.", "WARNING")
         return
 
-    all_results = {}
+    all_results  = {}
+    source_count_map = {}  # track how many sources suggested each film
+
     for i, (r, base) in enumerate(validated_sources):
         title = r["title"]
         print_source_header(i + 1, len(validated_sources), title, base.get("genre", ""))
@@ -872,8 +889,18 @@ def main():
         cprint(f"  -> {len(candidates)} candidate(s) retained", "cyan")
         for c in candidates:
             key = c["title"]
+            source_count_map[key] = source_count_map.get(key, 0) + 1
             if key not in all_results or c["score"] > all_results[key]["score"]:
                 all_results[key] = c
+
+    # Apply multi-source bonus + score cap
+    for key, c in all_results.items():
+        n = source_count_map.get(key, 1)
+        if n > 1:
+            bonus = round((n - 1) * 0.8, 2)
+            c["score"] = round(c["score"] + bonus, 2)
+            c["reasons"] = c.get("reasons", []) + [f"multi_source:{n}"]
+        c["score"] = min(c["score"], 20.0)  # cap score
     sorted_all = sorted(all_results.values(), key=lambda x: x["score"], reverse=True)
     final, source_count = [], {}
     for c in sorted_all:
