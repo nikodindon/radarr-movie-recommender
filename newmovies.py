@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-newmovies_v18.py -- Radarr Movie Recommender
+newmovies_v19.py -- Radarr Movie Recommender
 
-v18 changes:
-- --mood: direct Ollama generation from atmosphere description (no random source)
-- --like "Film Title": recommendations based on any film, even outside your library
-- --like + --mood: mood enriches the --like prompt
-- Fix: low plot_sim + no strong signal = score penalty to avoid off-topic results
-- Interactive mode: optional blacklisting when refusing a film
+v19 changes:
+- --saga: automatically complete film sagas/franchises in your library
+- --saga "Name": target a specific saga (Star Wars, Lord of the Rings, etc.)
+- Auto-detection mode: finds all incomplete sagas in your library
 """
 
 import sys
@@ -111,7 +109,7 @@ ADJACENT_GENRES = {
 # =========================
 # ARGUMENTS
 # =========================
-parser = argparse.ArgumentParser(description="Radarr Movie Recommender v18")
+parser = argparse.ArgumentParser(description="Radarr Movie Recommender v19")
 parser.add_argument("--sd",          type=int,   default=1970)
 parser.add_argument("--fd",          type=int,   default=2030)
 parser.add_argument("--score",       type=float, default=6.5)
@@ -130,6 +128,8 @@ parser.add_argument("--like",          type=str, default=None,
     help="Get recommendations based on a specific film title (even if not in your library)")
 parser.add_argument("--resetblacklist",  action="store_true",
     help="Reset the blacklist file (keeps Radarr library titles)")
+parser.add_argument("--saga",   type=str, default=None, nargs="?", const="__auto__",
+    help="Complete saga/franchise films. Use alone for auto-detection, or specify: --saga \"Star Wars\"")
 args = parser.parse_args()
 
 # =========================
@@ -182,7 +182,7 @@ def print_header(blacklist_size=0, genre_filter=None):
     w   = 70
     now = datetime.now().strftime("%Y-%m-%d  %H:%M")
     cprint("=" * w, "white", bold=True)
-    cprint(f"  RADARR MOVIE RECOMMENDER  v18          {now}", "white", bold=True)
+    cprint(f"  RADARR MOVIE RECOMMENDER  v19          {now}", "white", bold=True)
     cprint(f"  Model: {OLLAMA_MODEL:<20} Blacklist: {blacklist_size} titles", "gray")
     cprint(f"  Quality profile: {QUALITY_PROFILE_ID:<10} Availability: {MINIMUM_AVAILABILITY}", "gray")
     if genre_filter:
@@ -191,6 +191,10 @@ def print_header(blacklist_size=0, genre_filter=None):
         cprint(f"  Mood: {args.mood}", "cyan")
     if hasattr(args, "like") and args.like:
         cprint(f"  Based on: {args.like}", "cyan")
+    if hasattr(args, "saga") and args.saga and args.saga != "__auto__":
+        cprint(f"  Saga: {args.saga}", "cyan")
+    elif hasattr(args, "saga") and args.saga == "__auto__":
+        cprint(f"  Saga: auto-detection", "cyan")
     cprint("=" * w, "white", bold=True)
     print()
 
@@ -363,6 +367,14 @@ def get_omdb_full(raw_title: str, year=None):
     data = _omdb_request(params)
     if not data and year:
         data = _omdb_request({"t": title, "type": "movie", "plot": "short"})
+    # Fallback 1: if title has subtitle after ":", try without subtitle
+    if not data and ":" in title:
+        short_title = title.split(":")[0].strip()
+        data = _omdb_request({"t": short_title, "type": "movie", "plot": "short"})
+    # Fallback 2: if title has subtitle after " - ", try without
+    if not data and " - " in title:
+        short_title = title.split(" - ")[0].strip()
+        data = _omdb_request({"t": short_title, "type": "movie", "plot": "short"})
     if not data:
         OMDB_CACHE[cache_key] = None
         return None
@@ -729,6 +741,297 @@ def ollama_suggest_from_mood(mood: str) -> list:
         log(f"Ollama error: {e}", "ERROR")
         return []
 
+
+def ollama_get_saga_films(saga_name: str) -> list:
+    """Ask Ollama for the complete list of films in a saga."""
+    if not OLLAMA_OK:
+        return []
+    prompt = (
+        f'You are a film expert with encyclopedic knowledge of world cinema.\n\n'
+        f'List EVERY theatrically released film in the "{saga_name}" saga/franchise '
+        f'in chronological release order.\n\n'
+        f'For "{saga_name}", this includes the COMPLETE list — do not omit any film.\n\n'
+        f'STRICT Rules:\n'
+        f'- Include ALL films: part 1, part 2, part 3... every numbered sequel\n'
+        f'- Include spin-offs and anthology films\n'
+        f'- NO TV shows, NO animated series, NO shorts, NO special editions\n'
+        f'- Use EXACT English theatrical release title (e.g. "Die Hard 2" not "Die Hard 2: Die Harder")\n'
+        f'- Do NOT skip any film, do NOT add comments or notes\n'
+        f'- Each entry must be ONLY the film title, nothing else\n'
+        f'\nRespond ONLY with this exact JSON (no other text before or after):\n'
+        f'{{"films": ["Title 1", "Title 2", "Title 3", "Title 4", "Title 5"]}}'
+    )
+    cprint(f'  [Ollama] Getting complete film list for saga: "{saga_name}"...', "magenta")
+    try:
+        result = subprocess.run(
+            ["ollama", "run", OLLAMA_MODEL],
+            input=prompt, text=True, capture_output=True,
+            timeout=120, encoding="utf-8", errors="replace")
+        raw = result.stdout
+        # Try to parse JSON
+        m = re.search(r'\{[^{}]*"films"\s*:\s*\[([^\]]+)\][^{}]*\}', raw, re.DOTALL)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+                titles = data.get("films", [])
+                cprint(f'  [Ollama] {len(titles)} films found in saga', "magenta")
+                return titles
+            except:
+                pass
+        # Fallback: parse line by line
+        titles = []
+        for line in raw.split("\n"):
+            m2 = re.match(r'^(?:\d+[\.)\)]|[-*])\s*(.+)$', line.strip())
+            if m2:
+                t = m2.group(1).strip().strip('"\'\'')
+                if 2 < len(t) < 100:
+                    titles.append(t)
+        if titles:
+            cprint(f'  [Ollama] {len(titles)} films found in saga', "magenta")
+        return titles
+    except subprocess.TimeoutExpired:
+        log("Ollama timeout (120s)", "WARNING")
+        return []
+    except Exception as e:
+        log(f"Ollama error: {e}", "ERROR")
+        return []
+
+
+def ollama_detect_sagas(radarr_titles: list) -> dict:
+    """Ask Ollama to identify which films belong to sagas and group them."""
+    if not OLLAMA_OK:
+        return {}
+    # Send a sample of titles to avoid token overflow
+    sample = radarr_titles[:80]
+    prompt = (
+        f'You are a film expert.\n\n'
+        f'From this list of films, identify which ones belong to a saga or franchise '
+        f'(series of at least 2 related films).\n\n'
+        f'Films:\n'
+        + "\n".join(f'- {t}' for t in sample) +
+        f'\n\nFor each saga found, list its name and which films from the list belong to it.'
+        f'\nOnly include sagas where the list contains at least 1 film.'
+        f'\n\nRespond ONLY with valid JSON:\n'
+        f'{{"sagas": [{{"name": "Saga Name", "owned": ["Film 1", "Film 2"]}}, ...]}}'
+    )
+    cprint("  [Ollama] Detecting incomplete sagas in your library...", "magenta")
+    try:
+        result = subprocess.run(
+            ["ollama", "run", OLLAMA_MODEL],
+            input=prompt, text=True, capture_output=True,
+            timeout=180, encoding="utf-8", errors="replace")
+        raw = result.stdout
+        m = re.search(r'\{[^{}]*"sagas"\s*:\s*\[', raw, re.DOTALL)
+        if m:
+            # Find matching closing brace
+            start = m.start()
+            depth = 0
+            end = start
+            for i, ch in enumerate(raw[start:]):
+                if ch == '{': depth += 1
+                elif ch == '}': depth -= 1
+                if depth == 0:
+                    end = start + i + 1
+                    break
+            try:
+                data = json.loads(raw[start:end])
+                sagas = {s["name"]: s.get("owned", []) for s in data.get("sagas", [])}
+                cprint(f'  [Ollama] {len(sagas)} saga(s) detected', "magenta")
+                return sagas
+            except:
+                pass
+        return {}
+    except subprocess.TimeoutExpired:
+        log("Ollama timeout (180s)", "WARNING")
+        return {}
+    except Exception as e:
+        log(f"Ollama error: {e}", "ERROR")
+        return {}
+
+
+def run_saga_mode(radarr_titles: set, radarr_tmdb: set):
+    """Handle --saga mode: find and add missing saga films."""
+    saga_name = args.saga
+
+    if saga_name == "__auto__":
+        # Auto-detection mode
+        cprint("-" * 70, "gray")
+        title_list = sorted(radarr_titles)
+        detected = ollama_detect_sagas(title_list)
+        if not detected:
+            log("No sagas detected in your library.", "WARNING")
+            return
+        cprint(f"\n  Sagas found in your library:", "white", bold=True)
+        for name, owned in detected.items():
+            cprint(f"  - {name} ({len(owned)} film(s) owned)", "cyan")
+        print()
+        sagas_to_process = list(detected.keys())
+    else:
+        # Specific saga mode
+        cprint("-" * 70, "gray")
+        sagas_to_process = [saga_name]
+
+    all_missing = []
+
+    # Filter out hallucinated saga names (too long = likely a comment)
+    sagas_to_process = [s for s in sagas_to_process
+                        if len(s.split()) <= 8 and len(s) < 60]
+
+    for saga in sagas_to_process:
+        cprint(f'\n  Processing: {saga}', "white", bold=True)
+        cprint("-" * 50, "gray")
+
+        # Get complete film list for this saga
+        saga_films_raw = ollama_get_saga_films(saga)
+        if not saga_films_raw:
+            log(f'No films found for saga "{saga}"', "WARNING")
+            continue
+
+        # Clean and validate each film
+        missing = []
+        for raw in saga_films_raw:
+            # Clean saga title: remove year, comments, and anything after ' - '
+            raw_clean = re.sub(r'\s*\(\d{4}\)\s*$', '', str(raw).strip())
+            raw_clean = re.sub(r'\s+is\s+not.*$', '', raw_clean, flags=re.IGNORECASE)
+            raw_clean = re.sub(r'\s+was\s+.*$', '', raw_clean, flags=re.IGNORECASE)
+            raw_clean = re.sub(r'\s*,.*$', '', raw_clean)  # remove trailing comments
+            title = _clean_title(raw_clean)
+            if not title or len(title) < 3:
+                continue
+            # Skip if title looks like a sentence/comment
+            if len(title.split()) > 12:
+                log(f'  Skipped (looks like comment): {title[:50]}', 'DEBUG')
+                continue
+
+            # Already owned?
+            if title in radarr_titles or title in BLACKLIST:
+                log(f'  Already owned: {title}', "DEBUG")
+                continue
+
+            # Validate via OMDb
+            omdb = get_omdb_full(title)
+            if not omdb:
+                log(f'  OMDb not found: {title}', "DEBUG")
+                continue
+            if omdb["title"] in radarr_titles or omdb["title"] in BLACKLIST:
+                log(f'  Already owned: {omdb["title"]}', "DEBUG")
+                continue
+            if omdb["rating"] < 5.0:  # very permissive for saga films
+                log(f'  Filtered (low rating): {omdb["title"]} IMDb:{omdb["rating"]}', "DEBUG")
+                continue
+
+            # Radarr lookup
+            lookup = get_radarr_lookup(omdb["title"], omdb["year"])
+            if not lookup:
+                log(f'  Radarr lookup failed: {omdb["title"]}', "DEBUG")
+                continue
+            if lookup.get("tmdbId") in radarr_tmdb:
+                log(f'  Already in Radarr (tmdbId): {omdb["title"]}', "DEBUG")
+                continue
+
+            log(f'  Missing: {omdb["title"]} ({omdb["year"]}) IMDb:{omdb["rating"]:.1f}', "SELECT")
+            missing.append({
+                "title":     omdb["title"],
+                "year":      omdb["year"],
+                "rating":    omdb["rating"],
+                "score":     omdb["rating"],
+                "reasons":   [f"saga:{saga}"],
+                "lookup":    lookup,
+                "source":    f'saga:{saga}',
+                "relaxed":   False,
+            })
+
+        if not missing:
+            cprint(f'  Your {saga} collection is complete!', "green")
+        else:
+            cprint(f'  {len(missing)} missing film(s) in {saga}:', "yellow", bold=True)
+            for m in missing:
+                cprint(f'    - {m["title"]} ({m["year"]}) IMDb:{m["rating"]:.1f}', "cyan")
+            all_missing.extend(missing)
+
+    if not all_missing:
+        cprint("\n  All your sagas are complete!", "green", bold=True)
+        return
+
+    # Build output for Radarr
+    output = []
+    for m in all_missing:
+        lk = m["lookup"]
+        output.append({
+            "title":     lk["title"],
+            "year":      lk.get("year"),
+            "rating":    m["rating"],
+            "score":     m["score"],
+            "reasons":   m["reasons"],
+            "tmdbId":    lk["tmdbId"],
+            "titleSlug": lk["titleSlug"],
+            "images":    lk.get("images", []),
+            "source":    m["source"],
+        })
+
+    # Save JSON
+    json_file = f"reco_{today_str}.json"
+    with open(json_file, "w", encoding="utf-8") as f:
+        json.dump(output, f, indent=4, ensure_ascii=False)
+    log(f"Results saved -> {json_file}")
+
+    # Add to Radarr
+    added = []
+    if args.auto:
+        log(f"AUTO mode -- adding {len(output)} missing saga films to Radarr")
+        for m in output:
+            if add_to_radarr(m):
+                added.append(m["title"])
+                RUN_STATS["added"] += 1
+                BLACKLIST.add(m["title"])
+    else:
+        # Show summary
+        print()
+        cprint("=" * 90, "white", bold=True)
+        cprint(f"  MISSING SAGA FILMS  --  {len(all_missing)} film(s) to add", "white", bold=True)
+        cprint("=" * 90, "white", bold=True)
+        print()
+        for i, m in enumerate(all_missing, 1):
+            cprint(f"  {i:2d}.  {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}  [{m['source']}]", "cyan")
+        print()
+        cprint("Add to Radarr?", "white", bold=True)
+        choice = input("  (a=all / o=one by one / n=no): ").lower().strip()
+        if choice == "a":
+            for m in output:
+                if add_to_radarr(m):
+                    added.append(m["title"])
+                    RUN_STATS["added"] += 1
+                    BLACKLIST.add(m["title"])
+        elif choice == "o":
+            for m in all_missing:
+                rep = input(
+                    f"  + {m['title']} ({m['year']}) IMDb:{m['rating']:.1f}  add? (y/n): "
+                ).lower()
+                if rep == "y":
+                    lk = m["lookup"]
+                    movie_payload = {
+                        "title": lk["title"], "year": lk.get("year"),
+                        "rating": m["rating"], "score": m["score"],
+                        "reasons": m["reasons"], "tmdbId": lk["tmdbId"],
+                        "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
+                        "source": m["source"],
+                    }
+                    if add_to_radarr(movie_payload):
+                        added.append(m["title"])
+                        RUN_STATS["added"] += 1
+                        BLACKLIST.add(m["title"])
+                else:
+                    bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
+                    if bl_rep == "y":
+                        BLACKLIST.add(m["title"])
+
+    if added:
+        cprint(f"\n  {len(added)} film(s) added to Radarr!", "green", bold=True)
+
+    save_blacklist(BLACKLIST)
+    cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
+    cprint(f"  Log saved: {log_file}", "gray")
+
 # =========================
 # FALLBACK
 # =========================
@@ -992,6 +1295,12 @@ def main():
             return
         log(f"Genre filter '{args.genre}': {len(filtered_pool)} matching films in library", "INFO")
         pool = filtered_pool
+
+    # ── --saga mode: complete film sagas/franchises ──────────────────────
+    if args.saga:
+        run_saga_mode(radarr_titles, radarr_tmdb)
+        return
+    # ─────────────────────────────────────────────────────────────────────
 
     # ── --mood mode: generate directly from atmosphere description ────────
     if args.mood and not args.like:
