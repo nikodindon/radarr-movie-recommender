@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-newmovies_v17.py -- Radarr Movie Recommender
+newmovies_v18.py -- Radarr Movie Recommender
 
-v17 changes:
-- Flexible genre filter: borderline films penalized instead of rejected
-- Multi-source bonus: films suggested by multiple sources get a score boost
-- Score cap at 20.0 to avoid unbounded stacking
-- Year mismatch warning when Radarr year differs from OMDb
-- Blacklist count fix: displayed after Radarr merge
+v18 changes:
+- --mood: direct Ollama generation from atmosphere description (no random source)
+- --like "Film Title": recommendations based on any film, even outside your library
+- --like + --mood: mood enriches the --like prompt
+- Fix: low plot_sim + no strong signal = score penalty to avoid off-topic results
+- Interactive mode: optional blacklisting when refusing a film
 """
 
 import sys
@@ -111,7 +111,7 @@ ADJACENT_GENRES = {
 # =========================
 # ARGUMENTS
 # =========================
-parser = argparse.ArgumentParser(description="Radarr Movie Recommender v17")
+parser = argparse.ArgumentParser(description="Radarr Movie Recommender v18")
 parser.add_argument("--sd",          type=int,   default=1970)
 parser.add_argument("--fd",          type=int,   default=2030)
 parser.add_argument("--score",       type=float, default=6.5)
@@ -122,8 +122,14 @@ parser.add_argument("--top",         type=int,   default=10)
 parser.add_argument("--auto",        action="store_true")
 parser.add_argument("--no-embed",    action="store_true")
 parser.add_argument("--debug",       action="store_true")
-parser.add_argument("--genre",        type=str, default=None,
+parser.add_argument("--genre",  type=str, default=None,
     help="Filter by genre (e.g. Comedy, Sci-Fi, Horror). Comma-separated for multiple.")
+parser.add_argument("--mood",   type=str, default=None,
+    help="Describe the atmosphere you want (e.g. 'feel good', 'dark and intense', 'mind-bending')")
+parser.add_argument("--like",          type=str, default=None,
+    help="Get recommendations based on a specific film title (even if not in your library)")
+parser.add_argument("--resetblacklist",  action="store_true",
+    help="Reset the blacklist file (keeps Radarr library titles)")
 args = parser.parse_args()
 
 # =========================
@@ -181,6 +187,10 @@ def print_header(blacklist_size=0, genre_filter=None):
     cprint(f"  Quality profile: {QUALITY_PROFILE_ID:<10} Availability: {MINIMUM_AVAILABILITY}", "gray")
     if genre_filter:
         cprint(f"  Genre filter: {genre_filter}", "cyan")
+    if hasattr(args, "mood") and args.mood:
+        cprint(f"  Mood: {args.mood}", "cyan")
+    if hasattr(args, "like") and args.like:
+        cprint(f"  Based on: {args.like}", "cyan")
     cprint("=" * w, "white", bold=True)
     print()
 
@@ -226,6 +236,15 @@ def save_blacklist(bl):
         log(f"Error saving blacklist: {e}", "ERROR")
 
 BLACKLIST = load_blacklist()
+
+# Handle --resetblacklist immediately at startup
+if hasattr(args, "resetblacklist") and args.resetblacklist:
+    count = len(BLACKLIST)
+    BLACKLIST.clear()
+    save_blacklist(BLACKLIST)
+    cprint(f"  Blacklist reset: {count} titles removed.", "yellow", bold=True)
+    cprint("  The blacklist will be repopulated with your Radarr library on next run.", "gray")
+    exit(0)
 
 # =========================
 # OMDB KEYS
@@ -536,6 +555,11 @@ def score_candidate(base, candidate, relaxed=False):
         reasons.append(f"plot_sim:{sem:.2f}")
     if not relaxed and sem < 0.4 and not direct and not shared:
         score -= 2.0
+    # Extra penalty if plot_sim is very low and no director/actor signal
+    # This avoids off-topic results like Ice Age from Independence Day
+    if sem < 0.55 and not shared and bd == "n/a" or sem == 0.0:
+        if not direct or len(direct) < 2:
+            score -= 1.5
     score += candidate["rating"] / 3.0
     diff = abs(candidate["year"] - base["year"])
     score += 1.5 if diff < 5 else (0.8 if diff < 15 else 0)
@@ -578,6 +602,10 @@ def ollama_suggest_titles(base: dict) -> list:
         f'- Suggestions MUST be {args.genre} films\n'
         if args.genre else ""
     )
+    mood_instruction = (
+        f'- The mood/atmosphere requested by the user is: "{args.mood}" -- prioritize films that match this feeling\n'
+        if args.mood else ""
+    )
     prompt = (
         f'You are a film expert with encyclopedic knowledge of world cinema.\n\n'
         f'Source film: "{base["title"]}" ({base["year"]})\n'
@@ -594,6 +622,7 @@ def ollama_suggest_titles(base: dict) -> list:
         f'- Use exact English/international theatrical title\n'
         f'- Do NOT include the source film itself\n'
         f'{genre_instruction}'
+        f'{mood_instruction}'
         f'\nRespond ONLY with valid JSON:\n'
         f'{{"films": ["Title 1", "Title 2", ...]}}'
     )
@@ -606,6 +635,92 @@ def ollama_suggest_titles(base: dict) -> list:
         titles = _parse_ollama_titles(result.stdout)
         cprint(f"  [Ollama] {len(titles)} titles extracted", "magenta")
         logger.info(f"Ollama: {len(titles)} titles for '{base['title']}'")
+        return titles
+    except subprocess.TimeoutExpired:
+        log("Ollama timeout (120s)", "WARNING")
+        return []
+    except Exception as e:
+        log(f"Ollama error: {e}", "ERROR")
+        return []
+
+
+def ollama_suggest_from_title(film_title: str) -> list:
+    """Generate suggestions based on a film title not in the library."""
+    if not OLLAMA_OK:
+        return []
+    mood_instruction = (
+        f'- The mood/atmosphere requested is: "{args.mood}" -- prioritize films that match this feeling\n'
+        if args.mood else ""
+    )
+    genre_instruction = (
+        f'- Suggestions MUST be {args.genre} films\n'
+        if args.genre else ""
+    )
+    prompt = (
+        f'You are a film expert with encyclopedic knowledge of world cinema.\n\n'
+        f'The user wants recommendations similar to: "{film_title}"\n\n'
+        f'Suggest {args.suggestions} REAL existing films that share the same theme, tone, '
+        f'atmosphere or narrative style as "{film_title}".\n\n'
+        f'Rules:\n'
+        f'- Only real theatrically released films\n'
+        f'- Preferred IMDb rating above 6.5\n'
+        f'- Do NOT include "{film_title}" itself\n'
+        f'- No direct sequels/prequels\n'
+        f'- Vary the eras\n'
+        f'- Use exact English/international theatrical title\n'
+        f'{genre_instruction}'
+        f'{mood_instruction}'
+        f'\nRespond ONLY with valid JSON:\n'
+        f'{{"films": ["Title 1", "Title 2", ...]}}'
+    )
+    cprint(f'  [Ollama] Generating suggestions based on "{film_title}"...', "magenta")
+    try:
+        result = subprocess.run(
+            ["ollama", "run", OLLAMA_MODEL],
+            input=prompt, text=True, capture_output=True,
+            timeout=120, encoding="utf-8", errors="replace")
+        titles = _parse_ollama_titles(result.stdout)
+        cprint(f'  [Ollama] {len(titles)} titles extracted', "magenta")
+        logger.info(f'Ollama --like: {len(titles)} titles for "{film_title}"')
+        return titles
+    except subprocess.TimeoutExpired:
+        log("Ollama timeout (120s)", "WARNING")
+        return []
+    except Exception as e:
+        log(f"Ollama error: {e}", "ERROR")
+        return []
+
+
+def ollama_suggest_from_mood(mood: str) -> list:
+    """Generate suggestions purely based on a mood/atmosphere description."""
+    if not OLLAMA_OK:
+        return []
+    genre_instruction = (
+        f'- Suggestions MUST be {args.genre} films\n'
+        if args.genre else ""
+    )
+    prompt = (
+        f'You are a film expert with encyclopedic knowledge of world cinema.\n\n'
+        f'The user is looking for films with this specific mood or atmosphere: "{mood}"\n\n'
+        f'Suggest {args.suggestions} REAL existing films that perfectly match this mood/atmosphere.\n\n'
+        f'Rules:\n'
+        f'- Only real theatrically released films\n'
+        f'- Preferred IMDb rating above 6.5\n'
+        f'- Vary the eras and genres\n'
+        f'- Use exact English/international theatrical title\n'
+        f'{genre_instruction}'
+        f'\nRespond ONLY with valid JSON:\n'
+        f'{{"films": ["Title 1", "Title 2", ...]}}'
+    )
+    cprint(f'  [Ollama] Generating suggestions for mood: "{mood}"...', "magenta")
+    try:
+        result = subprocess.run(
+            ["ollama", "run", OLLAMA_MODEL],
+            input=prompt, text=True, capture_output=True,
+            timeout=120, encoding="utf-8", errors="replace")
+        titles = _parse_ollama_titles(result.stdout)
+        cprint(f'  [Ollama] {len(titles)} titles extracted', "magenta")
+        logger.info(f'Ollama --mood: {len(titles)} titles for mood "{mood}"')
         return titles
     except subprocess.TimeoutExpired:
         log("Ollama timeout (120s)", "WARNING")
@@ -652,6 +767,25 @@ def _build_target_genres(genre_arg: str) -> set:
         result.add(g)
         result.add(ALIASES.get(g, g))
     return result
+
+
+def _sequel_candidates(radarr_movies: list, blacklist_titles: set) -> list:
+    """Find sequels/prequels of films in the library that are NOT yet owned."""
+    # We ask Ollama to find sequels for each source film
+    # Simple heuristic: titles sharing main keyword with source
+    pass  # Handled via Ollama suggestions naturally
+
+def _is_sequel_of(candidate_title: str, source_title: str) -> bool:
+    """Detect if candidate is likely a sequel/prequel of source."""
+    # Extract main words (ignore articles, numbers)
+    stop = {"the","a","an","of","in","on","at","and","or","part","chapter"}
+    src_words = {w.lower() for w in re.findall(r'[a-zA-Z]+', source_title)
+                 if w.lower() not in stop and len(w) > 2}
+    cnd_words = {w.lower() for w in re.findall(r'[a-zA-Z]+', candidate_title)
+                 if w.lower() not in stop and len(w) > 2}
+    common = src_words & cnd_words
+    # If 2+ main words in common -> likely sequel/related
+    return len(common) >= 2 and len(src_words) >= 2
 
 # =========================
 # CANDIDATE VALIDATION
@@ -713,6 +847,12 @@ def validate_candidate(raw_title, base, radarr_titles, radarr_tmdb, relaxed=Fals
     if lookup.get("tmdbId") in radarr_tmdb:
         log(f"  Already in Radarr (tmdbId): {omdb['title']}", "DEBUG")
         return None
+    # Sequel/prequel boost: if candidate shares main words with source
+    if _is_sequel_of(omdb["title"], base["title"]):
+        sc = min(sc + 2.0, 20.0)
+        reasons.append("sequel_related")
+        log(f"  Sequel boost: {omdb['title']} <-> {base['title']}", "DEBUG")
+
     RUN_STATS["selected"] += 1
     relax_tag  = " [~]" if relaxed else ""
     title_str  = f"{omdb['title']} ({omdb['year']})"
@@ -853,6 +993,177 @@ def main():
         log(f"Genre filter '{args.genre}': {len(filtered_pool)} matching films in library", "INFO")
         pool = filtered_pool
 
+    # ── --mood mode: generate directly from atmosphere description ────────
+    if args.mood and not args.like:
+        cprint(f'\n  Mood: "{args.mood}"', "cyan", bold=True)
+        cprint("-" * 70, "gray")
+        mood_titles = ollama_suggest_from_mood(args.mood)
+        if not mood_titles:
+            log(f'No suggestions found for mood: "{args.mood}"', "WARNING")
+            return
+        RUN_STATS["ollama_suggestions"] += len(mood_titles)
+        cprint(f"  Validating {len(mood_titles)} candidates...", "gray")
+        # Use a neutral base for scoring
+        base_for_mood = {
+            "title": f'mood:{args.mood}', "year": 2000,
+            "genre": args.genre or "Drama,Thriller,Crime,Horror,Action,Comedy,Sci-Fi",
+            "actors": "", "director": "n/a", "rating": 0.0, "plot": args.mood
+        }
+        validated_mood = []
+        for raw in mood_titles:
+            omdb = get_omdb_full(_clean_title(raw))
+            if not omdb:
+                continue
+            if omdb["title"] in radarr_titles or omdb["title"] in BLACKLIST:
+                continue
+            if omdb["rating"] < args.score_relax:
+                continue
+            # For mood mode, skip genre/score filtering — Ollama chose these for the mood
+            lookup = get_radarr_lookup(omdb["title"], omdb["year"])
+            if not lookup or lookup.get("tmdbId") in radarr_tmdb:
+                continue
+            RUN_STATS["selected"] += 1
+            log(f"  + {omdb['title']} ({omdb['year']})  IMDb:{omdb['rating']:.1f}  genres:{omdb['genre']}", "SELECT")
+            validated_mood.append({
+                "title": omdb["title"], "year": omdb["year"],
+                "rating": omdb["rating"], "plot": omdb["plot"],
+                "score": round(omdb["rating"] * 1.5, 2),
+                "reasons": [f"mood:{args.mood}"],
+                "lookup": lookup, "source": f'mood:{args.mood}',
+                "relaxed": False,
+            })
+        if not validated_mood:
+            log(f'No valid candidates found for mood: "{args.mood}"', "WARNING")
+            return
+        validated_mood.sort(key=lambda x: x["score"], reverse=True)
+        final_mood = validated_mood[:args.top]
+        output = []
+        for m in final_mood:
+            lk = m["lookup"]
+            output.append({
+                "title": lk["title"], "year": lk.get("year"),
+                "rating": m["rating"], "score": m["score"],
+                "reasons": m["reasons"], "tmdbId": lk["tmdbId"],
+                "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
+                "source": m["source"],
+            })
+        json_file = f"reco_{today_str}.json"
+        with open(json_file, "w", encoding="utf-8") as f:
+            json.dump(output, f, indent=4, ensure_ascii=False)
+        log(f"Results saved -> {json_file}")
+        added = []
+        if args.auto:
+            for m in output:
+                if add_to_radarr(m):
+                    added.append(m["title"])
+                    RUN_STATS["added"] += 1
+                    BLACKLIST.add(m["title"])
+        else:
+            print_report(final_mood, added=[])
+            cprint("\nAdd to Radarr?", "white", bold=True)
+            choice = input("  (a=all / o=one by one / n=no): ").lower().strip()
+            if choice == "a":
+                for m in output:
+                    if add_to_radarr(m):
+                        added.append(m["title"])
+                        RUN_STATS["added"] += 1
+                        BLACKLIST.add(m["title"])
+            elif choice == "o":
+                for m in output:
+                    rep = input(f"  + {m['title']} ({m['year']}) IMDb:{m['rating']:.1f}  add? (y/n): ").lower()
+                    if rep == "y":
+                        if add_to_radarr(m):
+                            added.append(m["title"])
+                            RUN_STATS["added"] += 1
+                            BLACKLIST.add(m["title"])
+                    else:
+                        bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
+                        if bl_rep == "y":
+                            BLACKLIST.add(m["title"])
+        print_report(final_mood, added)
+        save_blacklist(BLACKLIST)
+        cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
+        cprint(f"  Log saved: {log_file}", "gray")
+        return
+    # ─────────────────────────────────────────────────────────────────────
+
+    # ── --like mode: use a specific film as the only source ──────────────
+    if args.like:
+        cprint(f'\n  Based on: "{args.like}"', "cyan", bold=True)
+        cprint("-" * 70, "gray")
+        like_titles = ollama_suggest_from_title(args.like)
+        if not like_titles:
+            log(f'No suggestions found for "{args.like}"', "WARNING")
+            return
+        RUN_STATS["ollama_suggestions"] += len(like_titles)
+        cprint(f"  Validating {len(like_titles)} candidates...", "gray")
+        # Create a fake base dict for scoring
+        like_omdb = get_omdb_full(args.like)
+        base_for_like = like_omdb if like_omdb else {
+            "title": args.like, "year": 2000, "genre": "", "actors": "",
+            "director": "", "rating": 0.0, "plot": ""
+        }
+        validated_like = []
+        for raw in like_titles:
+            c = validate_candidate(raw, base_for_like, radarr_titles, radarr_tmdb, relaxed=False)
+            if c:
+                c["source"] = f'like:{args.like}'
+                validated_like.append(c)
+        if not validated_like:
+            log(f'No valid candidates found for "{args.like}"', "WARNING")
+            return
+        validated_like.sort(key=lambda x: x["score"], reverse=True)
+        final_like = validated_like[:args.top]
+        output = []
+        for m in final_like:
+            lk = m["lookup"]
+            output.append({
+                "title": lk["title"], "year": lk.get("year"),
+                "rating": m["rating"], "score": m["score"],
+                "reasons": m["reasons"], "tmdbId": lk["tmdbId"],
+                "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
+                "source": m["source"],
+            })
+        json_file = f"reco_{today_str}.json"
+        with open(json_file, "w", encoding="utf-8") as f:
+            json.dump(output, f, indent=4, ensure_ascii=False)
+        log(f"Results saved -> {json_file}")
+        added = []
+        if args.auto:
+            for m in output:
+                if add_to_radarr(m):
+                    added.append(m["title"])
+                    RUN_STATS["added"] += 1
+                    BLACKLIST.add(m["title"])
+        else:
+            print_report(final_like, added=[])
+            cprint("\nAdd to Radarr?", "white", bold=True)
+            choice = input("  (a=all / o=one by one / n=no): ").lower().strip()
+            if choice == "a":
+                for m in output:
+                    if add_to_radarr(m):
+                        added.append(m["title"])
+                        RUN_STATS["added"] += 1
+                        BLACKLIST.add(m["title"])
+            elif choice == "o":
+                for m in output:
+                    rep = input(f"  + {m['title']} ({m['year']}) IMDb:{m['rating']:.1f}  add? (y/n): ").lower()
+                    if rep == "y":
+                        if add_to_radarr(m):
+                            added.append(m["title"])
+                            RUN_STATS["added"] += 1
+                            BLACKLIST.add(m["title"])
+                    else:
+                        bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
+                        if bl_rep == "y":
+                            BLACKLIST.add(m["title"])
+        print_report(final_like, added)
+        save_blacklist(BLACKLIST)
+        cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
+        cprint(f"  Log saved: {log_file}", "gray")
+        return
+    # ─────────────────────────────────────────────────────────────────────
+
     random.shuffle(pool)
     sources = pool[:args.sources]
     log(f"{len(sources)} source films selected from your library")
@@ -962,7 +1273,9 @@ def main():
                         RUN_STATS["added"] += 1
                         BLACKLIST.add(m["title"])
                 else:
-                    BLACKLIST.add(m["title"])
+                    bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
+                    if bl_rep == "y":
+                        BLACKLIST.add(m["title"])
     print_report(final, added)
     save_blacklist(BLACKLIST)
     cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
