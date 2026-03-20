@@ -841,23 +841,30 @@ def main():
     random.shuffle(pool)
     sources = pool[:args.sources]
     log(f"{len(sources)} source films selected from your library")
-    all_results = {}
-    for i, r in enumerate(sources):
+    # Pre-validate sources against OMDb genre if --genre is active
+    validated_sources = []
+    for r in sources:
         title = r["title"]
         base  = get_omdb_full(title)
         if not base:
             log(f"OMDb not found for '{title}' -- skipped", "WARNING")
             continue
-
-        # If --genre is active, verify the source film actually matches via OMDb
         if args.genre:
-            target_genres  = _build_target_genres(args.genre)
-            omdb_genres    = {g.strip().lower() for g in base.get("genre", "").split(",")}
+            target_genres = _build_target_genres(args.genre)
+            omdb_genres   = {g.strip().lower() for g in base.get("genre", "").split(",")}
             if not target_genres & omdb_genres:
                 log(f"Source '{title}' skipped (OMDb genre mismatch: {base.get('genre','')})", "DEBUG")
                 continue
+        validated_sources.append((r, base))
 
-        print_source_header(i + 1, len(sources), title, base.get("genre", ""))
+    if not validated_sources:
+        log("No valid source films found for the requested genre.", "WARNING")
+        return
+
+    all_results = {}
+    for i, (r, base) in enumerate(validated_sources):
+        title = r["title"]
+        print_source_header(i + 1, len(validated_sources), title, base.get("genre", ""))
         RUN_STATS["sources_processed"] += 1
         if base.get("plot"):
             get_embedding(base["plot"])
