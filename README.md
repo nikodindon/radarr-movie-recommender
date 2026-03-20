@@ -1,10 +1,24 @@
 # Radarr Movie Recommender
 
-A Python CLI script that automatically finds movies similar to what you already have in [Radarr](https://radarr.video/), and adds the best ones directly to your library.
-
-Uses a local LLM ([Ollama](https://ollama.com/)) for suggestions, [OMDb](https://www.omdbapi.com/) for validation, and semantic plot embeddings for thematic similarity scoring.
-
+[![GitHub stars](https://img.shields.io/github/stars/nikodindon/radarr-movie-recommender?style=social)](https://github.com/nikodindon/radarr-movie-recommender)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+**Automatic movie recommendations for Radarr, powered by a local LLM.**
+
+Forget genre-based or actor-based suggestions. This tool uses Ollama to understand the **theme**, **tone** and **atmosphere** of your films — then finds genuinely similar ones and adds them to Radarr automatically.
+
+**Recent examples:**
+
+| Source film | Recommendations |
+|---|---|
+| Whiplash | La La Land, Birdman, All That Jazz, A Star Is Born |
+| Django Unchained | The Hateful Eight, True Grit, 12 Years a Slave |
+| Mr. Nobody | Being John Malkovich, Amelie, Mulholland Drive |
+| The Thing | In the Mouth of Madness, It Follows, The Descent |
+| In Bruges | Seven Psychopaths, Dead Man's Shoes, The Proposition |
+
+Everything runs locally — no external AI API. Only a free OMDb key is needed (1000 req/day, free).
 
 ---
 
@@ -14,33 +28,27 @@ Uses a local LLM ([Ollama](https://ollama.com/)) for suggestions, [OMDb](https:/
 
 ---
 
-## What it does
+## How it works
 
 Each run, the script:
 
-1. Picks 10 random films from your Radarr library as source material
-2. Asks a local LLM to suggest similar films for each one
-3. Validates every suggestion against OMDb (rating, year, genre, not already in your library)
-4. Scores candidates using genre match, director, cast, and semantic plot similarity via embeddings
-5. Adds the top 10 results directly to Radarr, which starts downloading them
-
-Everything runs locally. No external AI API, no Docker, no web UI — just a single Python script.
-
----
-
-## How it works
+1. Picks random films from your Radarr library as source material
+2. Asks a local Ollama LLM to suggest similar films for each one
+3. Validates every suggestion against OMDb (rating, year, genre, not already owned)
+4. Scores candidates using genre match, director, cast, and semantic plot similarity
+5. Adds the top results directly to Radarr, which starts downloading
 
 ```
 Your Radarr library (10 random films)
            |
            v
-  Ollama generates 14 similar titles per film
+  Ollama generates similar titles per film
            |
            v
   OMDb validates: rating, year, genre, not already owned
            |
            v
-  Semantic scoring via plot embeddings + genre + director + cast
+  Semantic scoring: genre + director + cast + plot embeddings
            |
            v
   Top 10 candidates added to Radarr automatically
@@ -56,6 +64,7 @@ Your Radarr library (10 random films)
 | Plot similarity (embeddings) | 0 to +6 |
 | IMDb rating | 0 to +3.3 |
 | Era proximity | +0.8 to +1.5 |
+| Suggested by multiple sources | +0.8 per extra source |
 
 ---
 
@@ -104,10 +113,23 @@ radarr_api_key: your_radarr_api_key
 radarr_url: http://localhost:7878/api/v3
 root_folder: "D:\\Movies"
 ollama_model: llama3.1:8b
+
+# Quality profile to use when adding films (Radarr -> Settings -> Profiles)
+quality_profile_id: 6
+
+# Minimum availability before Radarr searches for the film
+minimum_availability: announced
 ```
 
-> Get free OMDb keys at [omdbapi.com/apikey.aspx](https://www.omdbapi.com/apikey.aspx).
-> Find your Radarr API key in Radarr -> Settings -> General.
+| Setting | Description |
+|---|---|
+| `omdb_keys` | Comma-separated OMDb API keys. Get free keys at [omdbapi.com](https://www.omdbapi.com/apikey.aspx) |
+| `radarr_api_key` | Found in Radarr -> Settings -> General |
+| `root_folder` | Your movies folder path |
+| `quality_profile_id` | Found in Radarr -> Settings -> Profiles |
+| `minimum_availability` | When Radarr starts searching: `announced`, `inCinemas`, or `released` |
+| `ollama_model` | Local Ollama model (default: `llama3.1:8b`) |
+
 > `config.yaml` is gitignored and never committed.
 
 ---
@@ -126,11 +148,20 @@ python newmovies.py
 python newmovies.py --auto
 ```
 
+**Genre mode** -- recommendations in a specific genre only:
+
+```bash
+python newmovies.py --genre "Sci-Fi"
+python newmovies.py --genre "Horror" --auto
+python newmovies.py --genre "Comedy,Romance" --sources 5
+```
+
 **All options:**
 
 | Argument | Default | Description |
 |---|---|---|
 | `--auto` | off | Add all recommendations without prompting |
+| `--genre` | off | Filter by genre (e.g. `Sci-Fi`, `Horror`, `Comedy,Romance`) |
 | `--sources` | 10 | Number of random source films to sample |
 | `--suggestions` | 14 | Ollama suggestions per source film |
 | `--top` | 10 | Final recommendations to keep |
@@ -139,14 +170,13 @@ python newmovies.py --auto
 | `--sd` | 1970 | Minimum release year |
 | `--fd` | 2030 | Maximum release year |
 | `--no-embed` | off | Disable plot embeddings (faster, less precise) |
-| `--genre` | off | Filter by genre (e.g. `Sci-Fi`, `Horror`, `Comedy,Romance`) |
 | `--debug` | off | Verbose output |
 
 ---
 
 ## Daily automation (Windows)
 
-Set it up once with PowerShell and wake up to 10 new movies every morning:
+Set it up once and wake up to 10 new movies every morning:
 
 ```powershell
 $action = New-ScheduledTaskAction `
@@ -173,6 +203,10 @@ Register-ScheduledTask -TaskName "RadarrRecommender" `
 ## Notes
 
 - The blacklist grows over time -- films already in your library or previously proposed are never suggested again
-- If Ollama returns too few results for a source film, the script falls back to OMDb search by director/genre/cast
-- The `--no-embed` flag disables semantic embeddings if you want faster runs at the cost of some precision
+- If Ollama returns too few results, the script falls back to OMDb search by director/genre/cast
+- The `--no-embed` flag disables semantic embeddings for faster runs
 - Works on Windows, Linux and Mac
+
+---
+
+If you find this useful, feel free to leave a star on GitHub -- it helps a lot! :star:
