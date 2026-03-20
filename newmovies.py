@@ -905,7 +905,7 @@ def run_saga_mode(radarr_titles: set, radarr_tmdb: set):
 
             # Already owned?
             if title in radarr_titles or title in BLACKLIST:
-                log(f'  Already owned: {title}', "DEBUG")
+                log(f'  Already owned: {title}', "INFO")
                 continue
 
             # Validate via OMDb
@@ -914,7 +914,7 @@ def run_saga_mode(radarr_titles: set, radarr_tmdb: set):
                 log(f'  OMDb not found: {title}', "DEBUG")
                 continue
             if omdb["title"] in radarr_titles or omdb["title"] in BLACKLIST:
-                log(f'  Already owned: {omdb["title"]}', "DEBUG")
+                log(f'  Already owned: {omdb["title"]}', "INFO")
                 continue
             if omdb["rating"] < 5.0:  # very permissive for saga films
                 log(f'  Filtered (low rating): {omdb["title"]} IMDb:{omdb["rating"]}', "DEBUG")

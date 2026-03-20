@@ -57,7 +57,14 @@ python newmovies.py --auto
 
 ## Preview
 
-![Run preview](docs/preview.png)
+**Classic mode** — recommendations based on your library:
+![Classic mode](docs/preview.png)
+
+**Saga mode** — automatically complete a franchise:
+![Saga mode](docs/saga_preview.png)
+
+**Mood mode** — find films by atmosphere:
+![Mood mode](docs/mood_preview.png)
 
 ---
 
