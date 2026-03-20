@@ -223,7 +223,6 @@ def save_blacklist(bl):
         log(f"Error saving blacklist: {e}", "ERROR")
 
 BLACKLIST = load_blacklist()
-log(f"Blacklist loaded: {len(BLACKLIST)} titles")
 
 # =========================
 # OMDB KEYS
@@ -812,6 +811,7 @@ def main():
     radarr_titles = {m["title"] for m in radarr}
     radarr_tmdb   = {m.get("tmdbId") for m in radarr if m.get("tmdbId")}
     BLACKLIST.update(radarr_titles)
+    log(f"Blacklist loaded: {len(BLACKLIST)} titles")
     print_header(len(BLACKLIST), genre_filter=args.genre)
 
     # Build source pool — filter by genre if --genre is specified
