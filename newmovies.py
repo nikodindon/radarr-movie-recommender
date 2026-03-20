@@ -182,7 +182,7 @@ def print_header(blacklist_size=0, genre_filter=None):
     w   = 70
     now = datetime.now().strftime("%Y-%m-%d  %H:%M")
     cprint("=" * w, "white", bold=True)
-    cprint(f"  RADARR MOVIE RECOMMENDER  v17          {now}", "white", bold=True)
+    cprint(f"  RADARR MOVIE RECOMMENDER  v18          {now}", "white", bold=True)
     cprint(f"  Model: {OLLAMA_MODEL:<20} Blacklist: {blacklist_size} titles", "gray")
     cprint(f"  Quality profile: {QUALITY_PROFILE_ID:<10} Availability: {MINIMUM_AVAILABILITY}", "gray")
     if genre_filter:
@@ -995,7 +995,6 @@ def main():
 
     # ── --mood mode: generate directly from atmosphere description ────────
     if args.mood and not args.like:
-        cprint(f'\n  Mood: "{args.mood}"', "cyan", bold=True)
         cprint("-" * 70, "gray")
         mood_titles = ollama_suggest_from_mood(args.mood)
         if not mood_titles:
@@ -1028,7 +1027,7 @@ def main():
                 "title": omdb["title"], "year": omdb["year"],
                 "rating": omdb["rating"], "plot": omdb["plot"],
                 "score": round(omdb["rating"] * 1.5, 2),
-                "reasons": [f"mood:{args.mood}"],
+                "reasons": [],
                 "lookup": lookup, "source": f'mood:{args.mood}',
                 "relaxed": False,
             })
@@ -1080,7 +1079,8 @@ def main():
                         bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
                         if bl_rep == "y":
                             BLACKLIST.add(m["title"])
-        print_report(final_mood, added)
+        if args.auto or added:
+            print_report(final_mood, added)
         save_blacklist(BLACKLIST)
         cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
         cprint(f"  Log saved: {log_file}", "gray")
@@ -1089,7 +1089,6 @@ def main():
 
     # ── --like mode: use a specific film as the only source ──────────────
     if args.like:
-        cprint(f'\n  Based on: "{args.like}"', "cyan", bold=True)
         cprint("-" * 70, "gray")
         like_titles = ollama_suggest_from_title(args.like)
         if not like_titles:
@@ -1157,7 +1156,8 @@ def main():
                         bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
                         if bl_rep == "y":
                             BLACKLIST.add(m["title"])
-        print_report(final_like, added)
+        if args.auto or added:
+            print_report(final_like, added)
         save_blacklist(BLACKLIST)
         cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
         cprint(f"  Log saved: {log_file}", "gray")
@@ -1276,7 +1276,8 @@ def main():
                     bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
                     if bl_rep == "y":
                         BLACKLIST.add(m["title"])
-    print_report(final, added)
+    if args.auto or added:
+        print_report(final, added)
     save_blacklist(BLACKLIST)
     cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
     cprint(f"  Log saved: {log_file}", "gray")

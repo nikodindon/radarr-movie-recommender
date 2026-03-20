@@ -20,6 +20,7 @@ A few things you can do that most tools can't:
 **Describe the mood you're after:**
 ```bash
 python newmovies.py --mood "dark and intense"
+python newmovies.py --mood "time travel and temporal paradoxes"
 python newmovies.py --mood "feel good sunday afternoon"
 python newmovies.py --mood "mind-bending with a twist ending"
 python newmovies.py --mood "survival against all odds"
@@ -59,6 +60,7 @@ python newmovies.py --auto
 | In Bruges | Seven Psychopaths *(same director + cast)*, Dead Man's Shoes, The Proposition |
 | Whiplash | La La Land, Birdman, All That Jazz |
 | `--mood "dark and intense"` | No Country for Old Men, Martyrs, Let the Right One In, The Handmaiden |
+| `--mood "time travel and temporal paradoxes"` | 2001: A Space Odyssey, 12 Monkeys, Predestination, Timecrimes, Mr. Nobody |
 | `--like "Parasite"` | The Handmaiden, Shoplifters, Dogtooth, A Separation |
 
 ---
