@@ -7,6 +7,8 @@
 
 A Python script that finds movies you'll actually want to watch — and adds them to Radarr automatically.
 
+Now with saga completion: automatically detect and fill gaps in your film franchises.
+
 It uses a **local LLM (Ollama)** to understand the theme, tone and atmosphere of your films, not just their genre or cast. No external AI API. No Docker. No subscription.
 
 ---
@@ -38,6 +40,14 @@ python newmovies.py --like "Inception" --mood "mind-bending"
 python newmovies.py --mood "slow burn thriller" --genre "Crime"
 ```
 
+**Complete an entire franchise in one command:**
+```bash
+python newmovies.py --saga "Star Wars"
+python newmovies.py --saga "Lord of the Rings"
+python newmovies.py --saga "Die Hard"
+python newmovies.py --saga  # auto-detect ALL incomplete sagas in your library
+```
+
 **Or just let it run automatically every night:**
 ```bash
 python newmovies.py --auto
@@ -62,6 +72,9 @@ python newmovies.py --auto
 | `--mood "dark and intense"` | No Country for Old Men, Martyrs, Let the Right One In, The Handmaiden |
 | `--mood "time travel and temporal paradoxes"` | 2001: A Space Odyssey, 12 Monkeys, Predestination, Timecrimes, Mr. Nobody |
 | `--like "Parasite"` | The Handmaiden, Shoplifters, Dogtooth, A Separation |
+| `--saga "Star Wars"` | Finds all 10 missing Episodes + Rogue One + Solo |
+| `--saga "Die Hard"` | Die Hard 2, Die Hard with a Vengeance, Live Free or Die Hard |
+| `--saga` (auto) | Detects Rocky, LotR, Back to the Future, Matrix... all incomplete |
 
 ---
 
@@ -161,6 +174,12 @@ python newmovies.py --like "Inception" --mood "mind-bending"
 python newmovies.py --genre "Horror" --auto
 python newmovies.py --genre "Sci-Fi" --sources 8
 
+# Complete a saga / franchise
+python newmovies.py --saga "Star Wars"
+python newmovies.py --saga "Harry Potter"
+python newmovies.py --saga "Lord of the Rings"
+python newmovies.py --saga          # auto-detect all incomplete sagas
+
 # Reset the blacklist
 python newmovies.py --resetblacklist
 ```
@@ -181,6 +200,7 @@ python newmovies.py --resetblacklist
 | `--sd` | 1970 | Minimum release year |
 | `--fd` | 2030 | Maximum release year |
 | `--no-embed` | off | Disable plot embeddings (faster, less precise) |
+| `--saga` | off | Complete a franchise: `--saga "Star Wars"` or `--saga` for auto-detection |
 | `--resetblacklist` | off | Clear the blacklist file |
 | `--debug` | off | Verbose output |
 
