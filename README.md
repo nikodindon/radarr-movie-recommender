@@ -5,148 +5,135 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GitHub last commit](https://img.shields.io/github/last-commit/nikodindon/radarr-movie-recommender)](https://github.com/nikodindon/radarr-movie-recommender/commits/main)
 
-A Python script that finds movies you'll actually want to watch — and adds them to Radarr automatically.
-
-Now with saga completion: automatically detect and fill gaps in your film franchises.
-
-It uses a **local LLM (Ollama)** to understand the theme, tone and atmosphere of your films, not just their genre or cast. No external AI API. No Docker. No subscription.
+**A local AI companion for Radarr** — finds films you'll actually want to watch, completes your collections, and analyzes your taste. No API key, no cloud, no subscription. Just Ollama running on your machine.
 
 ---
 
-## What makes it different
+## What you can do that no other tool offers
 
-Most recommendation tools match by genre or popularity. This one asks a local LLM to reason about your films the way a cinephile would — then validates and scores every suggestion before adding anything.
-
-A few things you can do that most tools can't:
-
-**Describe the mood you're after:**
+### 🎭 Describe what you're in the mood for — in plain English
 ```bash
-python newmovies.py --mood "dark and intense"
-python newmovies.py --mood "time travel and temporal paradoxes"
-python newmovies.py --mood "feel good sunday afternoon"
-python newmovies.py --mood "mind-bending with a twist ending"
-python newmovies.py --mood "survival against all odds"
+python newmovies.py --mood "dark and intense psychological thriller"
+python newmovies.py --mood "samurai and honor in feudal japan"
+python newmovies.py --mood "noir detective in a rainy city"
+python newmovies.py --mood "feel good sunday afternoon comedy"
+python newmovies.py --mood "mind-bending sci-fi with a twist ending"
+python newmovies.py --mood "heist with a brilliant plan" --imdb-min 7.5
 ```
 
-**Get recommendations from any film — even one you don't own:**
+### 🎬 Start from any film — even one you don't own
 ```bash
 python newmovies.py --like "Parasite"
-python newmovies.py --like "Oppenheimer"
-```
-
-**Combine both:**
-```bash
+python newmovies.py --like "2001: A Space Odyssey" --mood "existential and slow burn"
 python newmovies.py --like "Inception" --mood "mind-bending"
-python newmovies.py --mood "slow burn thriller" --genre "Crime"
 ```
 
-**Complete an entire franchise in one command:**
+### 🎞️ Complete an entire franchise automatically
 ```bash
-python newmovies.py --saga "Star Wars"
-python newmovies.py --saga "Lord of the Rings"
-python newmovies.py --saga  # auto-detect ALL incomplete sagas in your library
+python newmovies.py --saga "Star Wars"          # finds every missing episode
+python newmovies.py --saga "Planet of the Apes" # original + reboot series
+python newmovies.py --saga                      # auto-detects ALL incomplete sagas
 ```
 
-**Explore a filmmaker or artist's complete filmography:**
+### 🎥 Explore complete filmographies
 ```bash
-python newmovies.py --director "Stanley Kubrick"   # all films you're missing
+python newmovies.py --director "Stanley Kubrick"
 python newmovies.py --actor "Al Pacino"
-python newmovies.py --composer "John Williams"
-python newmovies.py --author "Stephen King"        # all film adaptations
+python newmovies.py --composer "Ennio Morricone" --export morricone.html
+python newmovies.py --author "Cormac McCarthy"   # all film adaptations
 ```
 
-**Analyze your collection and get personalized recommendations:**
+### 👥 Multi-actor search — unique to this tool
 ```bash
-python newmovies.py --analyze            # AI analysis of your cinephile profile
-python newmovies.py --analyze --no-timeout  # better results with large models
-python newmovies.py --stats              # collection statistics and charts
-python newmovies.py --watchlist letterboxd_watchlist.csv  # import from Letterboxd/IMDb
+# Films featuring ANY of these actors
+python newmovies.py --actor "Ben Stiller, Owen Wilson"
+
+# Films where ALL of them appear TOGETHER
+python newmovies.py --cast "Ben Stiller, Owen Wilson"
+# → Zoolander, Starsky & Hutch, Night at the Museum...
+
+python newmovies.py --cast "Robert De Niro, Al Pacino"
+# → The Godfather Part II, Heat, Righteous Kill
 ```
 
-**Or just let it run automatically every night:**
+### 🧠 AI analysis of your collection
 ```bash
-python newmovies.py --auto
+python newmovies.py --analyze
+# → "Your collection excels at 90s drama but lacks Kurosawa, French New Wave..."
+# → Suggests 10 films to fill the gaps
+
+python newmovies.py --stats
+# → Genre breakdown, decade distribution, average rating
+
+python newmovies.py --watchlist letterboxd_watchlist.csv
+# → Import directly from your Letterboxd or IMDb watchlist
+```
+
+### 📋 Review with full plot synopsis
+```bash
+python newmovies.py --actor "Al Pacino" --synopsis
+# Shows full plot before you decide to add each film:
+#   + Serpico (1973)  IMDb:7.7
+#   │ An honest New York cop named Frank Serpico blows the whistle
+#     on rampant corruption in the police department.
+#   add? (y/n):
+```
+
+### 📤 Export to HTML or CSV
+```bash
+python newmovies.py --actor "Ennio Morricone" --export morricone.html
+python newmovies.py --analyze --export gaps.csv
+# → Beautiful dark-themed HTML report you can share
 ```
 
 ---
 
-## Preview
+## Actual results
 
-**Classic mode** — recommendations based on your library:
-![Classic mode](docs/preview.png)
-
-**Saga mode** — automatically complete a franchise:
-![Saga mode](docs/saga_preview.png)
-
-**Mood mode** — find films by atmosphere:
-![Mood mode](docs/mood_preview.png)
-
----
-
-## Some actual results
-
-| Source | Recommended |
+| Command | What it found |
 |---|---|
-| Pulp Fiction | Reservoir Dogs *(same director)*, L.A. Confidential, Miller's Crossing |
-| The Thing | In the Mouth of Madness, It Follows, The Descent |
-| In Bruges | Seven Psychopaths *(same director + cast)*, Dead Man's Shoes, The Proposition |
-| Whiplash | La La Land, Birdman, All That Jazz |
-| `--mood "dark and intense"` | No Country for Old Men, Martyrs, Let the Right One In, The Handmaiden |
-| `--mood "time travel and temporal paradoxes"` | 2001: A Space Odyssey, 12 Monkeys, Predestination, Timecrimes, Mr. Nobody |
-| `--like "Parasite"` | The Handmaiden, Shoplifters, Dogtooth, A Separation |
-| `--saga "Star Wars"` | Finds all 10 missing Episodes + Rogue One + Solo |
-| `--saga "Die Hard"` | Die Hard 2, Die Hard with a Vengeance, Live Free or Die Hard |
-| `--saga` (auto) | Detects Rocky, LotR, Back to the Future, Matrix... all incomplete |
-| `--director "Wes Anderson"` | Bottle Rocket, Rushmore, Royal Tenenbaums, Grand Budapest Hotel... |
-| `--actor "Al Pacino"` | Serpico, Dog Day Afternoon, Godfather II, Scarface, Carlito's Way... |
-| `--composer "John Williams"` | Jaws, Raiders, Home Alone, Schindler's List, Empire Strikes Back... |
-| `--author "Stephen King"` | Carrie, The Shining, Stand by Me, Misery, The Mist... |
-| `--analyze` | Identifies gaps: missing Kubrick, Kurosawa, French New Wave... suggests 10 films |
-| `--stats` | 97 films, Drama 45%, 1990s 32%, 2000s 32%... |
-| `--watchlist` | Imports your Letterboxd/IMDb watchlist directly into Radarr |
+| `--mood "dark and intense"` | No Country for Old Men, Martyrs, Let the Right One In |
+| `--mood "samurai feudal japan"` | Seven Samurai, Rashomon, Yojimbo, Throne of Blood, Samurai Rebellion |
+| `--mood "noir detective rainy city"` | Se7en, Double Indemnity, Chinatown, Maltese Falcon, Big Sleep |
+| `--like "2001: A Space Odyssey"` | Solaris, Stalker, Silent Running, Moon, Arrival |
+| `--saga "Star Wars"` | All 10 missing episodes + Rogue One + Solo |
+| `--saga "Planet of the Apes"` | 6 missing films across original + reboot series |
+| `--director "Stanley Kubrick"` | Full filmography, only missing titles |
+| `--actor "Al Pacino"` | Serpico, Godfather I & II, Dog Day Afternoon, Scarface... |
+| `--composer "Ennio Morricone"` | 19 missing films incl. GBU, Once Upon a Time in America |
+| `--cast "De Niro, Pacino"` | Exactly 3 films where both appear: Godfather II, Heat, Righteous Kill |
+| `--analyze` | Detected gaps in Kurosawa, Bergman, French New Wave → 10 suggestions |
+| `--watchlist` | Imports Letterboxd/IMDb CSV directly into Radarr |
 
 ---
 
 ## How it works
 
 ```
-Your Radarr library (random sample)
-           │
-           ▼
-  Ollama generates similar titles
-  (understands theme, tone, atmosphere)
-           │
-           ▼
+Your Radarr library
+        │
+        ▼
+  Ollama (local LLM) understands theme, tone, atmosphere
+        │
+        ▼
   OMDb validates each suggestion
   (rating, year, genre, not already owned)
-           │
-           ▼
+        │
+        ▼
   Scoring: genre + director + cast + plot embeddings
-           │
-           ▼
-  Top results added to Radarr automatically
+        │
+        ▼
+  Results added to Radarr — with your approval
 ```
-
-**Scoring signals:**
-
-| Signal | Points |
-|---|---|
-| Genre match | +3 to +5 |
-| Same director | +4 |
-| Shared cast | +2 per actor |
-| Plot similarity (embeddings) | 0 to +6 |
-| IMDb rating | 0 to +3.3 |
-| Era proximity | +0.8 to +1.5 |
-| Suggested by multiple sources | +0.8 per extra source |
 
 ---
 
 ## Requirements
 
 - Python 3.10+
-- [Ollama](https://ollama.com/) running locally with `llama3.1:8b` pulled
+- [Ollama](https://ollama.com/) running locally
 - A running [Radarr](https://radarr.video/) instance
-- A free [OMDb API key](https://www.omdbapi.com/apikey.aspx) (1000 req/day, free tier)
+- A free [OMDb API key](https://www.omdbapi.com/apikey.aspx) (1000 req/day)
 
 ---
 
@@ -157,7 +144,7 @@ git clone https://github.com/nikodindon/radarr-movie-recommender.git
 cd radarr-movie-recommender
 pip install -r requirements.txt
 ollama pull llama3.1:8b
-cp config.yaml.example config.yaml   # then edit with your settings
+cp config.yaml.example config.yaml   # edit with your settings
 ```
 
 **config.yaml:**
@@ -171,116 +158,125 @@ quality_profile_id: 6
 minimum_availability: announced
 ```
 
-| Setting | Description |
-|---|---|
-| `omdb_keys` | Comma-separated OMDb keys — get free ones at [omdbapi.com](https://www.omdbapi.com/apikey.aspx) |
-| `radarr_api_key` | Radarr → Settings → General |
-| `quality_profile_id` | Radarr → Settings → Profiles |
-| `minimum_availability` | `announced`, `inCinemas`, or `released` |
-
-> `config.yaml` is gitignored and never committed.
-
 ---
 
-## Usage
+## All commands
 
 ```bash
-# Standard run — review and choose
+# Classic — based on your library
 python newmovies.py
+python newmovies.py --auto           # add everything without prompting
+python newmovies.py --genre "Horror"
 
-# Add everything automatically
-python newmovies.py --auto
-
-# By mood
+# Mood & discovery
 python newmovies.py --mood "dark and intense"
-python newmovies.py --mood "feel good" --genre "Comedy"
-
-# Based on a specific film
+python newmovies.py --mood "heist" --imdb-min 7.5
 python newmovies.py --like "Parasite"
 python newmovies.py --like "Inception" --mood "mind-bending"
 
-# By genre
-python newmovies.py --genre "Horror" --auto
-python newmovies.py --genre "Sci-Fi" --sources 8
-
-# Complete a saga / franchise
+# Sagas & franchises
 python newmovies.py --saga "Star Wars"
-python newmovies.py --saga "Harry Potter"
-python newmovies.py --saga "Lord of the Rings"
-python newmovies.py --saga          # auto-detect all incomplete sagas
+python newmovies.py --saga            # auto-detect all incomplete sagas
 
-# Explore a filmography
+# Filmographies
 python newmovies.py --director "Stanley Kubrick"
 python newmovies.py --actor "Al Pacino"
-python newmovies.py --composer "Ennio Morricone"
-python newmovies.py --author "Philip K. Dick"
-python newmovies.py --actor "Al Pacino" --artist-top 20  # limit to top 20
+python newmovies.py --actor "Ben Stiller, Owen Wilson"     # any of them
+python newmovies.py --cast "Ben Stiller, Owen Wilson"      # together only
+python newmovies.py --cast "Robert De Niro, Al Pacino"
+python newmovies.py --composer "Hans Zimmer"
+python newmovies.py --author "Stephen King"
+python newmovies.py --actor "Al Pacino" --artist-top 20   # top 20 only
 
 # Collection intelligence
-python newmovies.py --stats                              # collection stats
-python newmovies.py --analyze                            # AI analysis + recommendations
-python newmovies.py --analyze --no-timeout               # with large model
-python newmovies.py --watchlist letterboxd_watchlist.csv # import watchlist
+python newmovies.py --stats
+python newmovies.py --analyze
+python newmovies.py --analyze --no-timeout    # with large model
+python newmovies.py --watchlist watchlist.csv
 
-# v22 features
-python newmovies.py --mood "heist" --imdb-min 7.5        # filter by minimum IMDb rating
-python newmovies.py --analyze --synopsis                 # show plot synopsis one by one
-python newmovies.py --actor "Al Pacino" --export pacino.html  # export to HTML
-python newmovies.py --analyze --export recommendations.csv    # export to CSV
+# Output options
+python newmovies.py --actor "Pacino" --synopsis            # show plot before adding
+python newmovies.py --actor "Pacino" --export pacino.html  # export to HTML
+python newmovies.py --analyze --export gaps.csv            # export to CSV
 
-# Reset the blacklist
+# Tuning
+python newmovies.py --imdb-min 7.5
+python newmovies.py --sources 15 --suggestions 20 --top 15
+python newmovies.py --sd 1960 --fd 1990                    # era filter
+
+# Reset
 python newmovies.py --resetblacklist
 ```
 
-**All options:**
+---
+
+## All options
 
 | Argument | Default | Description |
 |---|---|---|
 | `--auto` | off | Add all recommendations without prompting |
-| `--mood` | off | Describe the atmosphere you want in plain language |
-| `--like` | off | Base recommendations on a specific film title |
-| `--genre` | off | Filter by genre (`Sci-Fi`, `Horror`, `Comedy,Romance`...) |
-| `--sources` | 10 | Number of source films to sample from your library |
-| `--suggestions` | 14 | Ollama suggestions per source film |
-| `--top` | 10 | Number of final recommendations to keep |
-| `--score` | 6.5 | Minimum IMDb rating |
-| `--score-relax` | 5.9 | IMDb threshold in relaxed fallback mode |
+| `--mood` | off | Describe the atmosphere in plain language |
+| `--like` | off | Base recommendations on any film title |
+| `--genre` | off | Filter by genre (`Sci-Fi`, `Horror`, `Comedy`...) |
+| `--saga` | off | Complete a franchise — specify name or use alone for auto-detection |
+| `--director` | off | Missing films by a director |
+| `--actor` | off | Missing films by actor(s) — comma-separated for multiple |
+| `--cast` | off | Missing films where ALL listed actors appear together |
+| `--composer` | off | Missing films scored by a composer |
+| `--author` | off | Missing film adaptations of an author |
+| `--artist-top` | 0 | Limit filmography results (0 = all) |
+| `--analyze` | off | AI analysis of your collection + gap-filling recommendations |
+| `--stats` | off | Collection statistics: genres, decades, ratings |
+| `--watchlist` | off | Import from Letterboxd or IMDb CSV export |
+| `--synopsis` | off | Show full plot synopsis when reviewing films one by one |
+| `--imdb-min` | off | Minimum IMDb rating override (e.g. `--imdb-min 7.5`) |
+| `--export` | off | Export to CSV or HTML (e.g. `--export reco.html`) |
+| `--no-timeout` | off | Disable timeouts for large models |
+| `--sources` | 10 | Source films sampled from your library |
+| `--suggestions` | 14 | Ollama suggestions per source |
+| `--top` | 10 | Final recommendations to keep |
+| `--score` | 6.5 | Minimum IMDb rating (classic mode) |
+| `--score-relax` | 5.9 | IMDb threshold in relaxed fallback |
 | `--sd` | 1970 | Minimum release year |
 | `--fd` | 2030 | Maximum release year |
-| `--no-embed` | off | Disable plot embeddings (faster, less precise) |
-| `--saga` | off | Complete a franchise: `--saga "Star Wars"` or `--saga` for auto-detection |
-| `--director` | off | Add missing films by a director (e.g. `--director "Kubrick"`) |
-| `--actor` | off | Add missing films featuring an actor (e.g. `--actor "Al Pacino"`) |
-| `--composer` | off | Add missing films scored by a composer (e.g. `--composer "Hans Zimmer"`) |
-| `--author` | off | Add missing film adaptations of an author (e.g. `--author "Stephen King"`) |
-| `--artist-top` | 0 | Limit filmography results (0 = all, useful for actors with huge careers) |
-| `--stats` | off | Display collection statistics (genres, decades, ratings) |
-| `--watchlist` | off | Import films from Letterboxd or IMDb CSV export |
-| `--analyze` | off | AI-powered collection analysis with personalized gap-filling recommendations |
-| `--no-timeout` | off | Disable timeouts for large models (recommended with `--analyze`) |
-| `--synopsis` | off | Show full plot synopsis when reviewing films one by one |
-| `--imdb-min` | off | Override minimum IMDb rating on the fly (e.g. `--imdb-min 7.5`) |
-| `--export` | off | Export results to CSV or HTML (e.g. `--export reco.html`) |
-| `--resetblacklist` | off | Clear the blacklist file |
+| `--no-embed` | off | Disable plot embeddings (faster) |
+| `--resetblacklist` | off | Clear the blacklist |
 | `--debug` | off | Verbose output |
+
+---
+
+## Recommended models
+
+| Model | Size | Best for |
+|---|---|---|
+| `llama3.1:8b` | 4.9 GB | Daily use, fast, good quality |
+| `mistral:7b` | 4.4 GB | Best balance speed/quality ⭐ |
+| `mistral-small:22b` | 12 GB | Filmographies, best accuracy 🏆 |
+| `llama3.2:3b` | 2.0 GB | Very fast, limited RAM |
+
+```bash
+ollama pull mistral:7b
+# then in config.yaml:
+# ollama_model: mistral:7b
+```
+
+Use `--no-timeout` with 22b+ models:
+```bash
+python newmovies.py --analyze --no-timeout
+```
 
 ---
 
 ## Daily automation
 
-Set it up once and wake up to new movies every morning:
-
-**Windows (Task Scheduler):**
+**Windows:**
 ```powershell
-$action = New-ScheduledTaskAction `
-    -Execute "python" `
-    -Argument "C:\path\to\newmovies.py --auto"
+$action = New-ScheduledTaskAction -Execute "python" -Argument "C:\path\to\newmovies.py --auto"
 $trigger = New-ScheduledTaskTrigger -Daily -At "03:00"
-Register-ScheduledTask -TaskName "RadarrRecommender" `
-    -Action $action -Trigger $trigger -RunLevel Highest
+Register-ScheduledTask -TaskName "RadarrRecommender" -Action $action -Trigger $trigger
 ```
 
-**Linux/Mac (cron):**
+**Linux/Mac:**
 ```bash
 0 3 * * * cd /path/to/radarr-movie-recommender && python newmovies.py --auto
 ```
@@ -290,69 +286,11 @@ Register-ScheduledTask -TaskName "RadarrRecommender" `
 ## Update
 
 ```bash
-cd radarr-movie-recommender
 git pull
 ```
 
-Your `config.yaml`, `blacklist.json` and logs are never overwritten — they are gitignored.
+`config.yaml`, `blacklist.json` and logs are never overwritten.
 
 ---
 
-## Files created at runtime
-
-| File | Description |
-|---|---|
-| `blacklist.json` | Films already proposed or in your library — never suggested again |
-| `omdb_apikey.conf` | Active OMDb key (auto-rotated when quota is reached) |
-| `reco_YYYYMMDD_HHMM.json` | Full scored results of each run |
-| `logs/reco_YYYYMMDD_HHMM.log` | Detailed log with every decision |
-
----
-
-## Recommended Ollama models
-
-The default `llama3.1:8b` works well for recommendations. For filmography modes (`--director`, `--actor`, etc.), larger models give significantly better results.
-
-| Model | Size | Best for | Hallucinations |
-|---|---|---|---|
-| `llama3.1:8b` | 4.9 GB | Daily recommendations, mood, saga | Moderate |
-| `mistral:7b` | 4.4 GB | Good balance speed/quality | Moderate |
-| `mistral-small:22b` | 12 GB | **Filmographies, best overall** 🏆 | Low |
-| `qwen2.5:7b` | 4.7 GB | Fast, conservative lists | Low but incomplete |
-| `gemma2:9b` | 5.4 GB | Similar to mistral:7b | Moderate |
-| `deepseek-r1:14b` | 9.0 GB | Not recommended for filmographies | High (too conservative) |
-
-**Verdict from benchmarks on actor filmographies:**
-- `mistral-small:22b` is the best model if you have 12+ GB RAM — most complete and accurate
-- `mistral:7b` is the best choice for 4-8 GB RAM systems
-- Larger models (32b+) need full RAM offloading and hallucinate more due to aggressive quantization
-
-**Pull and configure:**
-```bash
-ollama pull mistral-small:22b
-```
-
-Then update `config.yaml`:
-```yaml
-ollama_model: mistral-small:22b
-```
-
-Use `--no-timeout` with large models to avoid timeout issues:
-```bash
-python newmovies.py --actor "Al Pacino" --no-timeout
-python newmovies.py --director "Stanley Kubrick" --no-timeout
-```
-
----
-
-## Notes
-
-- Works on Windows, Linux and Mac
-- The `--no-embed` flag skips semantic embeddings for faster runs
-- When refusing a film in interactive mode, you can choose whether to blacklist it or keep it for later
-- If Ollama returns too few suggestions, the script falls back to OMDb search by director/genre/cast
-- Multiple free OMDb keys can be added — the script rotates them automatically on quota
-
----
-
-If you find this useful, a ⭐ on GitHub is always appreciated!
+If this is useful, a ⭐ on GitHub is always appreciated!

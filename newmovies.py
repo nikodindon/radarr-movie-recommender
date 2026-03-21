@@ -133,7 +133,9 @@ parser.add_argument("--saga",          type=str,   default=None, nargs="?", cons
 parser.add_argument("--director",      type=str,   default=None,
     help="Add missing films by a director")
 parser.add_argument("--actor",         type=str,   default=None,
-    help="Add missing films featuring an actor")
+    help="Add missing films featuring actor(s) — comma-separated: --actor \"Pacino, De Niro\"")
+parser.add_argument("--cast",          type=str,   default=None,
+    help="Add missing films where ALL listed actors appear together: --cast \"Stiller, Wilson\"")
 parser.add_argument("--composer",      type=str,   default=None,
     help="Add missing films scored by a composer")
 parser.add_argument("--author",        type=str,   default=None,
@@ -223,6 +225,8 @@ def print_header(blacklist_size=0, genre_filter=None):
         cprint(f"  Director: {args.director}", "cyan")
     if hasattr(args, "actor") and args.actor:
         cprint(f"  Actor: {args.actor}", "cyan")
+    if hasattr(args, "cast") and args.cast:
+        cprint(f"  Cast together: {args.cast}", "cyan")
     if hasattr(args, "composer") and args.composer:
         cprint(f"  Composer: {args.composer}", "cyan")
     if hasattr(args, "author") and args.author:
@@ -771,15 +775,18 @@ def ollama_suggest_from_mood(mood: str) -> list:
         f'- Suggestions MUST be {args.genre} films\n'
         if args.genre else ""
     )
+    # For mood mode, ask for more suggestions to compensate for blacklist filtering
+    mood_suggestions = max(args.suggestions, 25)
     prompt = (
         f'You are a film expert with encyclopedic knowledge of world cinema.\n\n'
         f'The user is looking for films with this specific mood or atmosphere: "{mood}"\n\n'
-        f'Suggest {args.suggestions} REAL existing films that perfectly match this mood/atmosphere.\n\n'
+        f'Suggest {mood_suggestions} REAL existing films that perfectly match this mood/atmosphere.\n\n'
         f'Rules:\n'
         f'- Only real theatrically released films\n'
-        f'- Preferred IMDb rating above 6.5\n'
+        f'- Include films across all IMDb rating levels if they match the mood\n'
         f'- Vary the eras and genres\n'
         f'- Use exact English/international theatrical title\n'
+        f'- Be exhaustive — list as many relevant films as possible\n'
         f'{genre_instruction}'
         f'\nRespond ONLY with valid JSON:\n'
         f'{{"films": ["Title 1", "Title 2", ...]}}'
@@ -1066,10 +1073,12 @@ def run_saga_mode(radarr_titles: set, radarr_tmdb: set):
                     RUN_STATS["added"] += 1
                     BLACKLIST.add(m["title"])
         elif choice == "o":
+            show_syn = getattr(args, "synopsis", False)
             for m in all_missing:
-                rep = input(
-                    f"  + {m['title']} ({m['year']}) IMDb:{m['rating']:.1f}  add? (y/n): "
-                ).lower()
+                cprint(f"  + {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}", "cyan")
+                if show_syn:
+                    _print_synopsis(m["title"], m.get("plot", ""))
+                rep = input("  add? (y/n): ").lower().strip()
                 if rep == "y":
                     lk = m["lookup"]
                     movie_payload = {
@@ -1087,7 +1096,6 @@ def run_saga_mode(radarr_titles: set, radarr_tmdb: set):
                     bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
                     if bl_rep == "y":
                         BLACKLIST.add(m["title"])
-
     if added:
         cprint(f"\n  {len(added)} film(s) added to Radarr!", "green", bold=True)
 
@@ -1101,21 +1109,30 @@ def ollama_get_filmography(person: str, role: str) -> list:
     if not OLLAMA_OK:
         return []
 
+    # Handle multiple actors (comma-separated)
+    names = [n.strip() for n in person.split(",")]
+    is_multi = len(names) > 1
+    names_str = " and ".join(names) if is_multi else person
+
     role_descriptions = {
         "director": (
-            f"List ALL theatrical films directed by {person}.\n"
-            f"Include only films where {person} is the main director."
+            f"List ALL theatrical films directed by {names_str}.\n"
+            f"Include only films where {names_str} is the main director."
         ),
         "actor": (
-            f"List ALL theatrical films where {person} has a significant role (lead or major supporting).\n"
-            f"Include only films where {person} actually appears on screen."
+            f"List ALL theatrical films where {names_str} {'each have' if is_multi else 'has'} a significant role (lead or major supporting).\n"
+            f"{'Include films where ANY of these actors appears on screen.' if is_multi else f'Include only films where {person} actually appears on screen.'}"
+        ),
+        "cast": (
+            f"List ALL theatrical films where {names_str} ALL appear together in the same film.\n"
+            f"Only include films where EVERY one of these actors has a role: {', '.join(names)}."
         ),
         "composer": (
-            f"List ALL theatrical films for which {person} composed the original score/soundtrack.\n"
-            f"Include only films where {person} is the main composer."
+            f"List ALL theatrical films for which {names_str} composed the original score/soundtrack.\n"
+            f"Include only films where {names_str} is the main composer."
         ),
         "author": (
-            f"List ALL theatrical films adapted from works written by {person}.\n"
+            f"List ALL theatrical films adapted from works written by {names_str}.\n"
             f"Include novels, short stories, and plays adapted into films."
         ),
     }
@@ -1147,6 +1164,7 @@ def ollama_get_filmography(person: str, role: str) -> list:
     role_labels = {
         "director": "films directed by",
         "actor":    "films featuring",
+        "cast":     "films with cast",
         "composer": "films scored by",
         "author":   "adaptations of",
     }
@@ -1367,8 +1385,9 @@ def run_artist_mode(person: str, role: str, radarr_titles: set, radarr_tmdb: set
     # Display
     print()
     cprint("=" * 90, "white", bold=True)
+    display_role = "CAST TOGETHER" if role == "cast" else role.upper()
     cprint(
-        f"  MISSING FILMS ({role.upper()}: {person})"
+        f"  MISSING FILMS ({display_role}: {person})"
         f"  --  {len(missing)} film(s) to add",
         "white", bold=True)
     cprint("=" * 90, "white", bold=True)
@@ -1396,10 +1415,12 @@ def run_artist_mode(person: str, role: str, radarr_titles: set, radarr_tmdb: set
                     RUN_STATS["added"] += 1
                     BLACKLIST.add(m["title"])
         elif choice == "o":
+            show_syn = getattr(args, "synopsis", False)
             for m in missing:
-                rep = input(
-                    f"  + {m['title']} ({m['year']}) IMDb:{m['rating']:.1f}  add? (y/n): "
-                ).lower()
+                cprint(f"  + {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}", "cyan")
+                if show_syn:
+                    _print_synopsis(m["title"], m.get("plot", ""))
+                rep = input("  add? (y/n): ").lower().strip()
                 if rep == "y":
                     lk = m["lookup"]
                     payload = {
@@ -1417,8 +1438,6 @@ def run_artist_mode(person: str, role: str, radarr_titles: set, radarr_tmdb: set
                     bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
                     if bl_rep == "y":
                         BLACKLIST.add(m["title"])
-
-    if added:
         cprint(f"\n  {len(added)} film(s) added to Radarr!", "green", bold=True)
 
     save_blacklist(BLACKLIST)
@@ -2354,6 +2373,8 @@ def main():
         artist_mode = ("director", args.director)
     elif args.actor:
         artist_mode = ("actor", args.actor)
+    elif getattr(args, "cast", None):
+        artist_mode = ("cast", args.cast)
     elif args.composer:
         artist_mode = ("composer", args.composer)
     elif args.author:
@@ -2387,8 +2408,10 @@ def main():
                 continue
             if omdb["title"] in radarr_titles or omdb["title"] in BLACKLIST:
                 continue
-            min_r = getattr(args, "imdb_min", None) or args.score_relax
-            if omdb["rating"] < min_r:
+            # Mood mode: trust Ollama's choices, use very low floor (4.0)
+            # --imdb-min overrides if specified
+            min_r = getattr(args, "imdb_min", None) if getattr(args, "imdb_min", None) else 4.0
+            if omdb["rating"] < min_r and omdb["rating"] > 0:
                 continue
             # For mood mode, skip genre/score filtering — Ollama chose these for the mood
             lookup = get_radarr_lookup(omdb["title"], omdb["year"])
@@ -2441,8 +2464,12 @@ def main():
                         RUN_STATS["added"] += 1
                         BLACKLIST.add(m["title"])
             elif choice == "o":
+                show_syn = getattr(args, "synopsis", False)
                 for m in output:
-                    rep = input(f"  + {m['title']} ({m['year']}) IMDb:{m['rating']:.1f}  add? (y/n): ").lower()
+                    cprint(f"  + {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}", "cyan")
+                    if show_syn:
+                        _print_synopsis(m["title"], m.get("plot", ""))
+                    rep = input("  add? (y/n): ").lower().strip()
                     if rep == "y":
                         if add_to_radarr(m):
                             added.append(m["title"])
@@ -2518,8 +2545,12 @@ def main():
                         RUN_STATS["added"] += 1
                         BLACKLIST.add(m["title"])
             elif choice == "o":
+                show_syn = getattr(args, "synopsis", False)
                 for m in output:
-                    rep = input(f"  + {m['title']} ({m['year']}) IMDb:{m['rating']:.1f}  add? (y/n): ").lower()
+                    cprint(f"  + {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}", "cyan")
+                    if show_syn:
+                        _print_synopsis(m["title"], m.get("plot", ""))
+                    rep = input("  add? (y/n): ").lower().strip()
                     if rep == "y":
                         if add_to_radarr(m):
                             added.append(m["title"])
