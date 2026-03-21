@@ -141,6 +141,8 @@ parser.add_argument("--author",    type=str, default=None,
     help="Add missing film adaptations of an author (e.g. --author \"Stephen King\")")
 parser.add_argument("--artist-top", type=int, default=0,
     help="Limit films retrieved per artist (default: 0 = all, e.g. --artist-top 20 for top 20 only)")
+parser.add_argument("--no-timeout", action="store_true",
+    help="Disable timeouts for large models")
 args = parser.parse_args()
 
 # =========================
@@ -214,6 +216,8 @@ def print_header(blacklist_size=0, genre_filter=None):
         cprint(f"  Composer: {args.composer}", "cyan")
     if hasattr(args, "author") and args.author:
         cprint(f"  Author: {args.author}", "cyan")
+    if getattr(args, "no_timeout", False):
+        cprint(f"  Mode: no timeout (large model)", "yellow")
     cprint("=" * w, "white", bold=True)
     print()
 
@@ -314,15 +318,31 @@ if not test_omdb_key(CURRENT_OMDB_KEY):
 # OLLAMA
 # =========================
 def test_ollama():
-    try:
-        result = subprocess.run(
-            ["ollama", "run", OLLAMA_MODEL],
-            input="Reply with only the word OK.",
-            text=True, capture_output=True,
-            timeout=30, encoding="utf-8", errors="replace")
-        return "OK" in result.stdout.upper()
-    except:
-        return False
+    # Allow more time for large models to load into VRAM
+    warmup_timeout = 300 if getattr(args, "no_timeout", False) else 120
+    for attempt in range(2):
+        try:
+            result = subprocess.run(
+                ["ollama", "run", OLLAMA_MODEL],
+                input="Reply with only the word OK.",
+                text=True, capture_output=True,
+                timeout=warmup_timeout,
+                encoding="utf-8", errors="replace")
+            if "OK" in result.stdout.upper():
+                return True
+            # Model might be loading, wait and retry
+            if attempt == 0:
+                log(f"Ollama warming up model {OLLAMA_MODEL}...", "INFO")
+                time.sleep(5)
+        except subprocess.TimeoutExpired:
+            if attempt == 0:
+                log(f"Ollama slow to respond, retrying (model loading)...", "WARNING")
+                time.sleep(10)
+        except Exception as e:
+            log(f"Ollama test error: {e}", "DEBUG")
+            if attempt == 0:
+                time.sleep(5)
+    return False
 
 OLLAMA_OK = test_ollama()
 log(f"Ollama {'ready' if OLLAMA_OK else 'UNAVAILABLE'}",
@@ -659,10 +679,11 @@ def ollama_suggest_titles(base: dict) -> list:
     )
     cprint(f"  [Ollama] Generating suggestions...", "magenta")
     try:
+        _timeout = None if getattr(args, "no_timeout", False) else 120
         result = subprocess.run(
             ["ollama", "run", OLLAMA_MODEL],
             input=prompt, text=True, capture_output=True,
-            timeout=120, encoding="utf-8", errors="replace")
+            timeout=_timeout, encoding="utf-8", errors="replace")
         titles = _parse_ollama_titles(result.stdout)
         cprint(f"  [Ollama] {len(titles)} titles extracted", "magenta")
         logger.info(f"Ollama: {len(titles)} titles for '{base['title']}'")
@@ -706,10 +727,11 @@ def ollama_suggest_from_title(film_title: str) -> list:
     )
     cprint(f'  [Ollama] Generating suggestions based on "{film_title}"...', "magenta")
     try:
+        _timeout = None if getattr(args, "no_timeout", False) else 120
         result = subprocess.run(
             ["ollama", "run", OLLAMA_MODEL],
             input=prompt, text=True, capture_output=True,
-            timeout=120, encoding="utf-8", errors="replace")
+            timeout=_timeout, encoding="utf-8", errors="replace")
         titles = _parse_ollama_titles(result.stdout)
         cprint(f'  [Ollama] {len(titles)} titles extracted', "magenta")
         logger.info(f'Ollama --like: {len(titles)} titles for "{film_title}"')
@@ -745,10 +767,11 @@ def ollama_suggest_from_mood(mood: str) -> list:
     )
     cprint(f'  [Ollama] Generating suggestions for mood: "{mood}"...', "magenta")
     try:
+        _timeout = None if getattr(args, "no_timeout", False) else 120
         result = subprocess.run(
             ["ollama", "run", OLLAMA_MODEL],
             input=prompt, text=True, capture_output=True,
-            timeout=120, encoding="utf-8", errors="replace")
+            timeout=_timeout, encoding="utf-8", errors="replace")
         titles = _parse_ollama_titles(result.stdout)
         cprint(f'  [Ollama] {len(titles)} titles extracted', "magenta")
         logger.info(f'Ollama --mood: {len(titles)} titles for mood "{mood}"')
@@ -769,7 +792,7 @@ def ollama_get_saga_films(saga_name: str) -> list:
         f'You are a film expert with encyclopedic knowledge of world cinema.\n\n'
         f'List EVERY theatrically released film in the "{saga_name}" saga/franchise '
         f'in chronological release order.\n\n'
-        f'For "{saga_name}", this includes the COMPLETE list — do not omit any film.\n\n'
+        f'For "{saga_name}", this includes the COMPLETE list â€” do not omit any film.\n\n'
         f'STRICT Rules:\n'
         f'- Include ALL films: part 1, part 2, part 3... every numbered sequel\n'
         f'- Include spin-offs and anthology films\n'
@@ -782,10 +805,11 @@ def ollama_get_saga_films(saga_name: str) -> list:
     )
     cprint(f'  [Ollama] Getting complete film list for saga: "{saga_name}"...', "magenta")
     try:
+        _timeout = None if getattr(args, "no_timeout", False) else 120
         result = subprocess.run(
             ["ollama", "run", OLLAMA_MODEL],
             input=prompt, text=True, capture_output=True,
-            timeout=120, encoding="utf-8", errors="replace")
+            timeout=_timeout, encoding="utf-8", errors="replace")
         raw = result.stdout
         # Try to parse JSON
         m = re.search(r'\{[^{}]*"films"\s*:\s*\[([^\]]+)\][^{}]*\}', raw, re.DOTALL)
@@ -835,10 +859,11 @@ def ollama_detect_sagas(radarr_titles: list) -> dict:
     )
     cprint("  [Ollama] Detecting incomplete sagas in your library...", "magenta")
     try:
+        _timeout = None if getattr(args, "no_timeout", False) else 180
         result = subprocess.run(
             ["ollama", "run", OLLAMA_MODEL],
             input=prompt, text=True, capture_output=True,
-            timeout=180, encoding="utf-8", errors="replace")
+            timeout=_timeout, encoding="utf-8", errors="replace")
         raw = result.stdout
         m = re.search(r'\{[^{}]*"sagas"\s*:\s*\[', raw, re.DOTALL)
         if m:
@@ -1116,10 +1141,11 @@ def ollama_get_filmography(person: str, role: str) -> list:
         env = copy.copy(os.environ)
         env["TERM"] = "dumb"
         env["NO_COLOR"] = "1"
+        _timeout = None if getattr(args, "no_timeout", False) else 240
         result = subprocess.run(
             ["ollama", "run", OLLAMA_MODEL],
             input=prompt, text=True, capture_output=True,
-            timeout=240, encoding="utf-8", errors="replace",
+            timeout=_timeout, encoding="utf-8", errors="replace",
             env=env)
         # Strip ANSI escape codes from output
         raw = re.sub(r'\[[0-9;?]*[a-zA-Z]', '', result.stdout)
@@ -1159,17 +1185,18 @@ def ollama_get_filmography(person: str, role: str) -> list:
         return titles
 
     except subprocess.TimeoutExpired:
-        log("Ollama timeout — retrying with top 20 only...", "WARNING")
+        log("Ollama timeout â€” retrying with top 20 only...", "WARNING")
         simple_prompt = "\n".join([
             f"List the 20 most famous films where {person} is {role}.",
             "Reply ONLY with JSON:",
             '{"films": ["Title 1", "Title 2", "Title 3"]}',
         ])
         try:
+            _timeout2 = None if getattr(args, "no_timeout", False) else 120
             result2 = subprocess.run(
                 ["ollama", "run", OLLAMA_MODEL],
                 input=simple_prompt, text=True, capture_output=True,
-                timeout=120, encoding="utf-8", errors="replace")
+                timeout=_timeout2, encoding="utf-8", errors="replace")
             raw2 = result2.stdout
             m2 = re.search(r'\{[^{}]*"films"\s*:\s*\[', raw2, re.DOTALL)
             if m2:
@@ -1616,7 +1643,7 @@ def main():
     log(f"Blacklist loaded: {len(BLACKLIST)} titles")
     print_header(len(BLACKLIST), genre_filter=args.genre)
 
-    # Build source pool — filter by genre if --genre is specified
+    # Build source pool â€” filter by genre if --genre is specified
     pool = [m for m in radarr if m.get("title")]
     if args.genre:
         target_genres = _build_target_genres(args.genre)
@@ -1640,13 +1667,13 @@ def main():
         log(f"Genre filter '{args.genre}': {len(filtered_pool)} matching films in library", "INFO")
         pool = filtered_pool
 
-    # ── --saga mode: complete film sagas/franchises ──────────────────────
+    # â”€â”€ --saga mode: complete film sagas/franchises â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if args.saga:
         run_saga_mode(radarr_titles, radarr_tmdb)
         return
-    # ─────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    # ── artist modes: --director / --actor / --composer / --author ─────────
+    # â”€â”€ artist modes: --director / --actor / --composer / --author â”€â”€â”€â”€â”€â”€â”€â”€â”€
     artist_mode = None
     if args.director:
         artist_mode = ("director", args.director)
@@ -1661,9 +1688,9 @@ def main():
         role, person = artist_mode
         run_artist_mode(person, role, radarr_titles, radarr_tmdb)
         return
-    # ─────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    # ── --mood mode: generate directly from atmosphere description ────────
+    # â”€â”€ --mood mode: generate directly from atmosphere description â”€â”€â”€â”€â”€â”€â”€â”€
     if args.mood and not args.like:
         cprint("-" * 70, "gray")
         mood_titles = ollama_suggest_from_mood(args.mood)
@@ -1687,7 +1714,7 @@ def main():
                 continue
             if omdb["rating"] < args.score_relax:
                 continue
-            # For mood mode, skip genre/score filtering — Ollama chose these for the mood
+            # For mood mode, skip genre/score filtering â€” Ollama chose these for the mood
             lookup = get_radarr_lookup(omdb["title"], omdb["year"])
             if not lookup or lookup.get("tmdbId") in radarr_tmdb:
                 continue
@@ -1755,9 +1782,9 @@ def main():
         cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
         cprint(f"  Log saved: {log_file}", "gray")
         return
-    # ─────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    # ── --like mode: use a specific film as the only source ──────────────
+    # â”€â”€ --like mode: use a specific film as the only source â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if args.like:
         cprint("-" * 70, "gray")
         like_titles = ollama_suggest_from_title(args.like)
@@ -1832,7 +1859,7 @@ def main():
         cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
         cprint(f"  Log saved: {log_file}", "gray")
         return
-    # ─────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     random.shuffle(pool)
     sources = pool[:args.sources]
