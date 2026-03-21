@@ -280,6 +280,42 @@ Your `config.yaml`, `blacklist.json` and logs are never overwritten — they are
 
 ---
 
+## Recommended Ollama models
+
+The default `llama3.1:8b` works well for recommendations. For filmography modes (`--director`, `--actor`, etc.), larger models give significantly better results.
+
+| Model | Size | Best for | Hallucinations |
+|---|---|---|---|
+| `llama3.1:8b` | 4.9 GB | Daily recommendations, mood, saga | Moderate |
+| `mistral:7b` | 4.4 GB | Good balance speed/quality | Moderate |
+| `mistral-small:22b` | 12 GB | **Filmographies, best overall** 🏆 | Low |
+| `qwen2.5:7b` | 4.7 GB | Fast, conservative lists | Low but incomplete |
+| `gemma2:9b` | 5.4 GB | Similar to mistral:7b | Moderate |
+| `deepseek-r1:14b` | 9.0 GB | Not recommended for filmographies | High (too conservative) |
+
+**Verdict from benchmarks on actor filmographies:**
+- `mistral-small:22b` is the best model if you have 12+ GB RAM — most complete and accurate
+- `mistral:7b` is the best choice for 4-8 GB RAM systems
+- Larger models (32b+) need full RAM offloading and hallucinate more due to aggressive quantization
+
+**Pull and configure:**
+```bash
+ollama pull mistral-small:22b
+```
+
+Then update `config.yaml`:
+```yaml
+ollama_model: mistral-small:22b
+```
+
+Use `--no-timeout` with large models to avoid timeout issues:
+```bash
+python newmovies.py --actor "Al Pacino" --no-timeout
+python newmovies.py --director "Stanley Kubrick" --no-timeout
+```
+
+---
+
 ## Notes
 
 - Works on Windows, Linux and Mac
