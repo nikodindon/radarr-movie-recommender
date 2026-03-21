@@ -222,6 +222,12 @@ python newmovies.py --analyze                            # AI analysis + recomme
 python newmovies.py --analyze --no-timeout               # with large model
 python newmovies.py --watchlist letterboxd_watchlist.csv # import watchlist
 
+# v22 features
+python newmovies.py --mood "heist" --imdb-min 7.5        # filter by minimum IMDb rating
+python newmovies.py --analyze --synopsis                 # show plot synopsis one by one
+python newmovies.py --actor "Al Pacino" --export pacino.html  # export to HTML
+python newmovies.py --analyze --export recommendations.csv    # export to CSV
+
 # Reset the blacklist
 python newmovies.py --resetblacklist
 ```
@@ -252,6 +258,9 @@ python newmovies.py --resetblacklist
 | `--watchlist` | off | Import films from Letterboxd or IMDb CSV export |
 | `--analyze` | off | AI-powered collection analysis with personalized gap-filling recommendations |
 | `--no-timeout` | off | Disable timeouts for large models (recommended with `--analyze`) |
+| `--synopsis` | off | Show full plot synopsis when reviewing films one by one |
+| `--imdb-min` | off | Override minimum IMDb rating on the fly (e.g. `--imdb-min 7.5`) |
+| `--export` | off | Export results to CSV or HTML (e.g. `--export reco.html`) |
 | `--resetblacklist` | off | Clear the blacklist file |
 | `--debug` | off | Verbose output |
 
