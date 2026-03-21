@@ -50,10 +50,17 @@ python newmovies.py --saga  # auto-detect ALL incomplete sagas in your library
 **Explore a filmmaker or artist's complete filmography:**
 ```bash
 python newmovies.py --director "Stanley Kubrick"   # all films you're missing
-python newmovies.py --director "Wes Anderson"
 python newmovies.py --actor "Al Pacino"
 python newmovies.py --composer "John Williams"
 python newmovies.py --author "Stephen King"        # all film adaptations
+```
+
+**Analyze your collection and get personalized recommendations:**
+```bash
+python newmovies.py --analyze            # AI analysis of your cinephile profile
+python newmovies.py --analyze --no-timeout  # better results with large models
+python newmovies.py --stats              # collection statistics and charts
+python newmovies.py --watchlist letterboxd_watchlist.csv  # import from Letterboxd/IMDb
 ```
 
 **Or just let it run automatically every night:**
@@ -94,6 +101,9 @@ python newmovies.py --auto
 | `--actor "Al Pacino"` | Serpico, Dog Day Afternoon, Godfather II, Scarface, Carlito's Way... |
 | `--composer "John Williams"` | Jaws, Raiders, Home Alone, Schindler's List, Empire Strikes Back... |
 | `--author "Stephen King"` | Carrie, The Shining, Stand by Me, Misery, The Mist... |
+| `--analyze` | Identifies gaps: missing Kubrick, Kurosawa, French New Wave... suggests 10 films |
+| `--stats` | 97 films, Drama 45%, 1990s 32%, 2000s 32%... |
+| `--watchlist` | Imports your Letterboxd/IMDb watchlist directly into Radarr |
 
 ---
 
@@ -206,6 +216,12 @@ python newmovies.py --composer "Ennio Morricone"
 python newmovies.py --author "Philip K. Dick"
 python newmovies.py --actor "Al Pacino" --artist-top 20  # limit to top 20
 
+# Collection intelligence
+python newmovies.py --stats                              # collection stats
+python newmovies.py --analyze                            # AI analysis + recommendations
+python newmovies.py --analyze --no-timeout               # with large model
+python newmovies.py --watchlist letterboxd_watchlist.csv # import watchlist
+
 # Reset the blacklist
 python newmovies.py --resetblacklist
 ```
@@ -232,6 +248,10 @@ python newmovies.py --resetblacklist
 | `--composer` | off | Add missing films scored by a composer (e.g. `--composer "Hans Zimmer"`) |
 | `--author` | off | Add missing film adaptations of an author (e.g. `--author "Stephen King"`) |
 | `--artist-top` | 0 | Limit filmography results (0 = all, useful for actors with huge careers) |
+| `--stats` | off | Display collection statistics (genres, decades, ratings) |
+| `--watchlist` | off | Import films from Letterboxd or IMDb CSV export |
+| `--analyze` | off | AI-powered collection analysis with personalized gap-filling recommendations |
+| `--no-timeout` | off | Disable timeouts for large models (recommended with `--analyze`) |
 | `--resetblacklist` | off | Clear the blacklist file |
 | `--debug` | off | Verbose output |
 
