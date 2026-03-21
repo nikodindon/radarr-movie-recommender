@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-newmovies_v21.py -- Radarr Movie Recommender
+newmovies_v22.py -- Radarr Movie Recommender
 
-v21 changes:
-- --stats: display collection statistics and insights
-- --watchlist FILE: import films from Letterboxd/IMDb CSV watchlist
-- --analyze: AI-powered collection analysis with personalized recommendations
+v22 changes:
+- --synopsis: show plot synopsis when reviewing films one by one
+- --imdb-min: set minimum IMDb rating on the fly
+- --export FILE: export recommendations to CSV or HTML
 """
 
 import sys
@@ -109,7 +109,7 @@ ADJACENT_GENRES = {
 # =========================
 # ARGUMENTS
 # =========================
-parser = argparse.ArgumentParser(description="Radarr Movie Recommender v21")
+parser = argparse.ArgumentParser(description="Radarr Movie Recommender v22")
 parser.add_argument("--sd",            type=int,   default=1970)
 parser.add_argument("--fd",            type=int,   default=2030)
 parser.add_argument("--score",         type=float, default=6.5)
@@ -123,21 +123,21 @@ parser.add_argument("--debug",         action="store_true")
 parser.add_argument("--genre",         type=str,   default=None,
     help="Filter by genre (e.g. Comedy, Sci-Fi, Horror). Comma-separated for multiple.")
 parser.add_argument("--mood",          type=str,   default=None,
-    help="Describe the atmosphere you want (e.g. 'feel good', 'dark and intense')")
+    help="Describe the atmosphere you want (e.g. feel good, dark and intense)")
 parser.add_argument("--like",          type=str,   default=None,
     help="Get recommendations based on a specific film (even if not in your library)")
 parser.add_argument("--resetblacklist", action="store_true",
     help="Reset the blacklist file")
 parser.add_argument("--saga",          type=str,   default=None, nargs="?", const="__auto__",
-    help="Complete saga films. Use alone for auto-detection or: --saga \"Star Wars\"")
+    help="Complete saga films. Use alone for auto-detection or specify a saga name")
 parser.add_argument("--director",      type=str,   default=None,
-    help="Add missing films by a director (e.g. --director \"Stanley Kubrick\")")
+    help="Add missing films by a director")
 parser.add_argument("--actor",         type=str,   default=None,
-    help="Add missing films featuring an actor (e.g. --actor \"Al Pacino\")")
+    help="Add missing films featuring an actor")
 parser.add_argument("--composer",      type=str,   default=None,
-    help="Add missing films scored by a composer (e.g. --composer \"Hans Zimmer\")")
+    help="Add missing films scored by a composer")
 parser.add_argument("--author",        type=str,   default=None,
-    help="Add missing film adaptations of an author (e.g. --author \"Stephen King\")")
+    help="Add missing film adaptations of an author")
 parser.add_argument("--artist-top",    type=int,   default=0,
     help="Limit filmography results (0 = all, e.g. --artist-top 20)")
 parser.add_argument("--no-timeout",    action="store_true",
@@ -148,6 +148,12 @@ parser.add_argument("--watchlist",     type=str,   default=None,
     help="Import films from Letterboxd or IMDb CSV watchlist file")
 parser.add_argument("--analyze",       action="store_true",
     help="AI-powered collection analysis with personalized recommendations")
+parser.add_argument("--synopsis",      action="store_true",
+    help="Show plot synopsis when reviewing films one by one")
+parser.add_argument("--imdb-min",      type=float, default=None,
+    help="Minimum IMDb rating override (e.g. --imdb-min 7.5)")
+parser.add_argument("--export",        type=str,   default=None,
+    help="Export recommendations to file (e.g. --export reco.csv or --export reco.html)")
 args = parser.parse_args()
 
 # =========================
@@ -200,7 +206,7 @@ def print_header(blacklist_size=0, genre_filter=None):
     w   = 70
     now = datetime.now().strftime("%Y-%m-%d  %H:%M")
     cprint("=" * w, "white", bold=True)
-    cprint(f"  RADARR MOVIE RECOMMENDER  v21          {now}", "white", bold=True)
+    cprint(f"  RADARR MOVIE RECOMMENDER  v22          {now}", "white", bold=True)
     cprint(f"  Model: {OLLAMA_MODEL:<20} Blacklist: {blacklist_size} titles", "gray")
     cprint(f"  Quality profile: {QUALITY_PROFILE_ID:<10} Availability: {MINIMUM_AVAILABILITY}", "gray")
     if genre_filter:
@@ -223,6 +229,10 @@ def print_header(blacklist_size=0, genre_filter=None):
         cprint(f"  Author: {args.author}", "cyan")
     if getattr(args, "no_timeout", False):
         cprint(f"  Mode: no timeout (large model)", "yellow")
+    if getattr(args, "imdb_min", None):
+        cprint(f"  IMDb min: {args.imdb_min}", "cyan")
+    if getattr(args, "synopsis", False):
+        cprint(f"  Synopsis: on", "cyan")
     if getattr(args, "watchlist", None):
         cprint(f"  Watchlist: {args.watchlist}", "cyan")
     cprint("=" * w, "white", bold=True)
@@ -564,7 +574,9 @@ def is_junk(title):
 def is_valid_candidate(movie, min_score=None):
     if not movie:
         return False
-    threshold = min_score if min_score is not None else args.score
+    # --imdb-min overrides default score threshold
+    imdb_override = getattr(args, "imdb_min", None)
+    threshold = imdb_override if imdb_override is not None else (min_score if min_score is not None else args.score)
     if movie["rating"] < threshold:
         return False
     if movie["year"] < args.sd or movie["year"] > args.fd:
@@ -1308,6 +1320,7 @@ def run_artist_mode(person: str, role: str, radarr_titles: set, radarr_tmdb: set
             "year":    omdb["year"],
             "rating":  omdb["rating"],
             "score":   omdb["rating"],
+            "plot":    omdb.get("plot", ""),
             "reasons": [f"{role}:{person}"],
             "lookup":  lookup,
             "source":  f"{role}:{person}",
@@ -1348,6 +1361,8 @@ def run_artist_mode(person: str, role: str, radarr_titles: set, radarr_tmdb: set
     with open(json_file, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=4, ensure_ascii=False)
     log(f"Results saved -> {json_file}")
+    if getattr(args, "export", None):
+        export_recommendations(output, args.export)
 
     # Display
     print()
@@ -1561,6 +1576,7 @@ def run_watchlist(filepath: str, radarr_titles: set, radarr_tmdb: set):
         missing.append({
             "title":   omdb["title"], "year":    omdb["year"],
             "rating":  omdb["rating"], "score":  omdb["rating"],
+            "plot":    omdb.get("plot", ""),
             "reasons": ["watchlist"], "lookup":  lookup,
             "source":  f"watchlist:{os.path.basename(filepath)}",
             "relaxed": False,
@@ -1591,6 +1607,8 @@ def run_watchlist(filepath: str, radarr_titles: set, radarr_tmdb: set):
     with open(json_file, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=4, ensure_ascii=False)
     log(f"Results saved -> {json_file}")
+    if getattr(args, "export", None):
+        export_recommendations(output, args.export)
 
     print()
     cprint("=" * 90, "white", bold=True)
@@ -1831,6 +1849,7 @@ def run_analyze(radarr: list, radarr_titles: set, radarr_tmdb: set):
         missing.append({
             "title":   omdb["title"], "year":    omdb["year"],
             "rating":  omdb["rating"], "score":  round(omdb["rating"] * 1.5, 2),
+            "plot":    omdb.get("plot", ""),
             "reasons": ["analysis_gap"], "lookup": lookup,
             "source":  "analyze", "relaxed": False,
         })
@@ -1853,6 +1872,8 @@ def run_analyze(radarr: list, radarr_titles: set, radarr_tmdb: set):
     json_file = f"reco_{today_str}.json"
     with open(json_file, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=4, ensure_ascii=False)
+    if getattr(args, "export", None):
+        export_recommendations(output, args.export)
 
     print()
     cprint("=" * w, "white", bold=True)
@@ -1880,10 +1901,12 @@ def run_analyze(radarr: list, radarr_titles: set, radarr_tmdb: set):
                     RUN_STATS["added"] += 1
                     BLACKLIST.add(m["title"])
         elif choice == "o":
+            show_syn = getattr(args, "synopsis", False)
             for m in missing:
-                rep = input(
-                    f"  + {m['title']} ({m['year']}) IMDb:{m['rating']:.1f}  add? (y/n): "
-                ).lower()
+                cprint(f"  + {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}", "cyan")
+                if show_syn:
+                    _print_synopsis(m["title"], m.get("plot", ""))
+                rep = input("  add? (y/n): ").lower().strip()
                 if rep == "y":
                     lk = m["lookup"]
                     payload = {
@@ -1901,13 +1924,141 @@ def run_analyze(radarr: list, radarr_titles: set, radarr_tmdb: set):
                     bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
                     if bl_rep == "y":
                         BLACKLIST.add(m["title"])
-
     if added:
         cprint(f"\n  {len(added)} film(s) added to Radarr!", "green", bold=True)
 
     save_blacklist(BLACKLIST)
     cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
     cprint(f"  Log saved: {log_file}", "gray")
+
+
+def _print_synopsis(title: str, plot: str = ""):
+    """Print synopsis — auto-fetches from OMDb if plot is empty."""
+    if not plot or plot == "N/A":
+        for key in [k for k in OMDB_CACHE if k.startswith(f"{title}|")]:
+            cached = OMDB_CACHE.get(key)
+            if isinstance(cached, dict) and cached.get("plot") and cached["plot"] != "N/A":
+                plot = cached["plot"]
+                break
+        if not plot or plot == "N/A":
+            try:
+                omdb = get_omdb_full(title)
+                if omdb:
+                    plot = omdb.get("plot", "")
+            except Exception:
+                pass
+    if not plot or plot == "N/A":
+        return
+    # Word-wrap the full plot at 80 chars
+    words = plot.split()
+    line = "    │ "
+    lines = []
+    for word in words:
+        if len(line) + len(word) + 1 > 84:
+            lines.append(line)
+            line = "      " + word + " "
+        else:
+            line += word + " "
+    if line.strip():
+        lines.append(line)
+    for l in lines:
+        cprint(l, "gray")
+
+def _ask_one_by_one(missing: list, output: list, label: str = "") -> list:
+    """Generic one-by-one confirmation with optional synopsis."""
+    added = []
+    show_synopsis = getattr(args, "synopsis", False)
+    for m in missing:
+        title_str = f"{m['title']} ({m['year']})  IMDb:{m['rating']:.1f}"
+        if label:
+            title_str += f"  [{label}]"
+        cprint(f"  + {title_str}", "cyan")
+        if show_synopsis:
+            # Try to get plot from omdb cache or m dict
+            plot = m.get("plot", "") or OMDB_CACHE.get(f"{m['title']}|", {})
+            if isinstance(plot, dict):
+                plot = plot.get("plot", "")
+            _print_synopsis(m["title"], plot)
+        rep = input("  add? (y/n): ").lower().strip()
+        if rep == "y":
+            # Find matching output entry
+            out_entry = next((o for o in output if o["title"] == m["title"]), None)
+            if out_entry and add_to_radarr(out_entry):
+                added.append(m["title"])
+                RUN_STATS["added"] += 1
+                BLACKLIST.add(m["title"])
+        else:
+            bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
+            if bl_rep == "y":
+                BLACKLIST.add(m["title"])
+    return added
+
+
+def export_recommendations(output: list, filepath: str):
+    """Export recommendations to CSV or HTML."""
+    import csv as csv_module
+    ext = filepath.lower().split(".")[-1]
+
+    if ext == "csv":
+        try:
+            with open(filepath, "w", newline="", encoding="utf-8") as f:
+                writer = csv_module.DictWriter(f,
+                    fieldnames=["title", "year", "rating", "score", "source", "reasons"])
+                writer.writeheader()
+                for m in output:
+                    writer.writerow({
+                        "title":   m.get("title", ""),
+                        "year":    m.get("year", ""),
+                        "rating":  m.get("rating", ""),
+                        "score":   m.get("score", ""),
+                        "source":  m.get("source", ""),
+                        "reasons": ", ".join(m.get("reasons", [])),
+                    })
+            cprint(f"  Exported {len(output)} films to {filepath}", "green")
+        except Exception as e:
+            log(f"Export error: {e}", "ERROR")
+
+    elif ext in ("html", "htm"):
+        try:
+            rows = ""
+            for i, m in enumerate(output, 1):
+                rows += (
+                    f"<tr><td>{i}</td><td>{m.get('title','')}</td>"
+                    f"<td>{m.get('year','')}</td>"
+                    f"<td>{m.get('rating','')}</td>"
+                    f"<td>{m.get('score','')}</td>"
+                    f"<td>{m.get('source','')}</td>"
+                    f"<td>{', '.join(m.get('reasons',[]))}</td></tr>\n"
+                )
+            html = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8">
+<title>Radarr Recommendations</title>
+<style>
+  body {{ font-family: Arial, sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }}
+  h1 {{ color: #00d4ff; }}
+  table {{ border-collapse: collapse; width: 100%; }}
+  th {{ background: #16213e; color: #00d4ff; padding: 10px; text-align: left; }}
+  td {{ padding: 8px 10px; border-bottom: 1px solid #2a2a4a; }}
+  tr:hover {{ background: #16213e; }}
+  .score {{ color: #00d4ff; font-weight: bold; }}
+  .rating {{ color: #f5c518; }}
+</style>
+</head>
+<body>
+<h1>Radarr Recommendations — {len(output)} films</h1>
+<table>
+<tr><th>#</th><th>Title</th><th>Year</th><th>IMDb</th><th>Score</th><th>Source</th><th>Reasons</th></tr>
+{rows}
+</table>
+</body></html>"""
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(html)
+            cprint(f"  Exported {len(output)} films to {filepath}", "green")
+        except Exception as e:
+            log(f"Export error: {e}", "ERROR")
+    else:
+        log(f"Unknown export format: {ext} (use .csv or .html)", "ERROR")
 
 # =========================
 # FALLBACK
@@ -2236,7 +2387,8 @@ def main():
                 continue
             if omdb["title"] in radarr_titles or omdb["title"] in BLACKLIST:
                 continue
-            if omdb["rating"] < args.score_relax:
+            min_r = getattr(args, "imdb_min", None) or args.score_relax
+            if omdb["rating"] < min_r:
                 continue
             # For mood mode, skip genre/score filtering — Ollama chose these for the mood
             lookup = get_radarr_lookup(omdb["title"], omdb["year"])
@@ -2462,6 +2614,8 @@ def main():
     with open(json_file, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=4, ensure_ascii=False)
     log(f"Results saved -> {json_file}")
+    if getattr(args, "export", None):
+        export_recommendations(output, args.export)
     if not output:
         log("No recommendations found.", "WARNING")
         return
@@ -2484,10 +2638,21 @@ def main():
                     RUN_STATS["added"] += 1
                     BLACKLIST.add(m["title"])
         elif choice == "o":
+            show_syn = getattr(args, "synopsis", False)
             for m in output:
-                rep = input(
-                    f"  + {m['title']} ({m['year']}) IMDb:{m['rating']:.1f}  add? (y/n): "
-                ).lower()
+                cprint(f"  + {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}", "cyan")
+                if show_syn:
+                    # Try cache with year first, then without
+                    cached = OMDB_CACHE.get(f"{m['title']}|{m.get('year','')}")
+                    if not cached:
+                        cached = OMDB_CACHE.get(f"{m['title']}|")
+                    plot = cached.get("plot", "") if isinstance(cached, dict) else ""
+                    if not plot:
+                        # Fetch from OMDb if not cached
+                        omdb = get_omdb_full(m["title"])
+                        plot = omdb.get("plot", "") if omdb else ""
+                    _print_synopsis(m["title"], plot)
+                rep = input("  add? (y/n): ").lower().strip()
                 if rep == "y":
                     if add_to_radarr(m):
                         added.append(m["title"])
