@@ -5,7 +5,45 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GitHub last commit](https://img.shields.io/github/last-commit/nikodindon/radarr-movie-recommender)](https://github.com/nikodindon/radarr-movie-recommender/commits/main)
 
-**A local AI companion for Radarr** — finds films you'll actually want to watch, completes your collections, and analyzes your taste. No API key, no cloud, no subscription. Just Ollama running on your machine.
+**A local AI companion for Radarr** : finds films you'll actually want to watch, completes your collections, and analyzes your taste. No API key, no cloud, no subscription. Just Ollama running on your machine.
+
+### The simplest use case — set it and forget it
+
+Run it once manually, pick the films you want, or just let it add everything automatically:
+
+```bash
+python newmovies.py          # review and choose
+python newmovies.py --auto   # add top 10 recommendations silently
+```
+
+Set it as a scheduled task and wake up every morning with new films already added to Radarr:
+
+**Windows (Task Scheduler):**
+```powershell
+$action = New-ScheduledTaskAction -Execute "python" -Argument "C:\path\to\newmovies.py --auto"
+$trigger = New-ScheduledTaskTrigger -Daily -At "03:00"
+Register-ScheduledTask -TaskName "RadarrRecommender" -Action $action -Trigger $trigger -RunLevel Highest
+```
+
+**Linux/Mac (cron):**
+```bash
+0 3 * * * cd /path/to/radarr-movie-recommender && python newmovies.py --auto
+```
+
+Your collection grows by itself , every morning if you want, 10 new films picked from your library's taste profile, validated against IMDb, added to Radarr and ready to download.
+
+---
+
+## Previews
+
+**Classic mode** — recommendations based on your library:
+![Classic mode](docs/preview.png)
+
+**Saga mode** — automatically complete a franchise:
+![Saga mode](docs/saga_preview.png)
+
+**Mood mode** — find films by atmosphere:
+![Mood mode](docs/mood_preview.png)
 
 ---
 
@@ -263,22 +301,6 @@ ollama pull mistral:7b
 Use `--no-timeout` with 22b+ models:
 ```bash
 python newmovies.py --analyze --no-timeout
-```
-
----
-
-## Daily automation
-
-**Windows:**
-```powershell
-$action = New-ScheduledTaskAction -Execute "python" -Argument "C:\path\to\newmovies.py --auto"
-$trigger = New-ScheduledTaskTrigger -Daily -At "03:00"
-Register-ScheduledTask -TaskName "RadarrRecommender" -Action $action -Trigger $trigger
-```
-
-**Linux/Mac:**
-```bash
-0 3 * * * cd /path/to/radarr-movie-recommender && python newmovies.py --auto
 ```
 
 ---
