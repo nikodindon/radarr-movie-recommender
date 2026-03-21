@@ -234,6 +234,17 @@ Register-ScheduledTask -TaskName "RadarrRecommender" `
 
 ---
 
+## Update
+
+```bash
+cd radarr-movie-recommender
+git pull
+```
+
+Your `config.yaml`, `blacklist.json` and logs are never overwritten — they are gitignored.
+
+---
+
 ## Files created at runtime
 
 | File | Description |
