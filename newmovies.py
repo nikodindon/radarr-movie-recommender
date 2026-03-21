@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-newmovies_v20.py -- Radarr Movie Recommender
+newmovies_v21.py -- Radarr Movie Recommender
 
-v20 changes:
-- --director "Name": add all films by a director you are missing
-- --actor "Name": add all films featuring an actor you are missing
-- --composer "Name": add all films scored by a composer you are missing
-- --author "Name": add all film adaptations of an author's works you are missing
+v21 changes:
+- --stats: display collection statistics and insights
+- --watchlist FILE: import films from Letterboxd/IMDb CSV watchlist
+- --analyze: AI-powered collection analysis with personalized recommendations
 """
 
 import sys
@@ -110,39 +109,45 @@ ADJACENT_GENRES = {
 # =========================
 # ARGUMENTS
 # =========================
-parser = argparse.ArgumentParser(description="Radarr Movie Recommender v20")
-parser.add_argument("--sd",          type=int,   default=1970)
-parser.add_argument("--fd",          type=int,   default=2030)
-parser.add_argument("--score",       type=float, default=6.5)
-parser.add_argument("--score-relax", type=float, default=5.9)
-parser.add_argument("--sources",     type=int,   default=10)
-parser.add_argument("--suggestions", type=int,   default=14)
-parser.add_argument("--top",         type=int,   default=10)
-parser.add_argument("--auto",        action="store_true")
-parser.add_argument("--no-embed",    action="store_true")
-parser.add_argument("--debug",       action="store_true")
-parser.add_argument("--genre",  type=str, default=None,
+parser = argparse.ArgumentParser(description="Radarr Movie Recommender v21")
+parser.add_argument("--sd",            type=int,   default=1970)
+parser.add_argument("--fd",            type=int,   default=2030)
+parser.add_argument("--score",         type=float, default=6.5)
+parser.add_argument("--score-relax",   type=float, default=5.9)
+parser.add_argument("--sources",       type=int,   default=10)
+parser.add_argument("--suggestions",   type=int,   default=14)
+parser.add_argument("--top",           type=int,   default=10)
+parser.add_argument("--auto",          action="store_true")
+parser.add_argument("--no-embed",      action="store_true")
+parser.add_argument("--debug",         action="store_true")
+parser.add_argument("--genre",         type=str,   default=None,
     help="Filter by genre (e.g. Comedy, Sci-Fi, Horror). Comma-separated for multiple.")
-parser.add_argument("--mood",   type=str, default=None,
-    help="Describe the atmosphere you want (e.g. 'feel good', 'dark and intense', 'mind-bending')")
-parser.add_argument("--like",          type=str, default=None,
-    help="Get recommendations based on a specific film title (even if not in your library)")
-parser.add_argument("--resetblacklist",  action="store_true",
-    help="Reset the blacklist file (keeps Radarr library titles)")
-parser.add_argument("--saga",     type=str, default=None, nargs="?", const="__auto__",
-    help="Complete saga/franchise films. Use alone for auto-detection, or specify: --saga \"Star Wars\"")
-parser.add_argument("--director",  type=str, default=None,
+parser.add_argument("--mood",          type=str,   default=None,
+    help="Describe the atmosphere you want (e.g. 'feel good', 'dark and intense')")
+parser.add_argument("--like",          type=str,   default=None,
+    help="Get recommendations based on a specific film (even if not in your library)")
+parser.add_argument("--resetblacklist", action="store_true",
+    help="Reset the blacklist file")
+parser.add_argument("--saga",          type=str,   default=None, nargs="?", const="__auto__",
+    help="Complete saga films. Use alone for auto-detection or: --saga \"Star Wars\"")
+parser.add_argument("--director",      type=str,   default=None,
     help="Add missing films by a director (e.g. --director \"Stanley Kubrick\")")
-parser.add_argument("--actor",     type=str, default=None,
+parser.add_argument("--actor",         type=str,   default=None,
     help="Add missing films featuring an actor (e.g. --actor \"Al Pacino\")")
-parser.add_argument("--composer",  type=str, default=None,
+parser.add_argument("--composer",      type=str,   default=None,
     help="Add missing films scored by a composer (e.g. --composer \"Hans Zimmer\")")
-parser.add_argument("--author",    type=str, default=None,
+parser.add_argument("--author",        type=str,   default=None,
     help="Add missing film adaptations of an author (e.g. --author \"Stephen King\")")
-parser.add_argument("--artist-top", type=int, default=0,
-    help="Limit films retrieved per artist (default: 0 = all, e.g. --artist-top 20 for top 20 only)")
-parser.add_argument("--no-timeout", action="store_true",
-    help="Disable timeouts for large models")
+parser.add_argument("--artist-top",    type=int,   default=0,
+    help="Limit filmography results (0 = all, e.g. --artist-top 20)")
+parser.add_argument("--no-timeout",    action="store_true",
+    help="Disable Ollama timeouts (useful for large models or nightly runs)")
+parser.add_argument("--stats",         action="store_true",
+    help="Display collection statistics")
+parser.add_argument("--watchlist",     type=str,   default=None,
+    help="Import films from Letterboxd or IMDb CSV watchlist file")
+parser.add_argument("--analyze",       action="store_true",
+    help="AI-powered collection analysis with personalized recommendations")
 args = parser.parse_args()
 
 # =========================
@@ -195,7 +200,7 @@ def print_header(blacklist_size=0, genre_filter=None):
     w   = 70
     now = datetime.now().strftime("%Y-%m-%d  %H:%M")
     cprint("=" * w, "white", bold=True)
-    cprint(f"  RADARR MOVIE RECOMMENDER  v20          {now}", "white", bold=True)
+    cprint(f"  RADARR MOVIE RECOMMENDER  v21          {now}", "white", bold=True)
     cprint(f"  Model: {OLLAMA_MODEL:<20} Blacklist: {blacklist_size} titles", "gray")
     cprint(f"  Quality profile: {QUALITY_PROFILE_ID:<10} Availability: {MINIMUM_AVAILABILITY}", "gray")
     if genre_filter:
@@ -218,6 +223,8 @@ def print_header(blacklist_size=0, genre_filter=None):
         cprint(f"  Author: {args.author}", "cyan")
     if getattr(args, "no_timeout", False):
         cprint(f"  Mode: no timeout (large model)", "yellow")
+    if getattr(args, "watchlist", None):
+        cprint(f"  Watchlist: {args.watchlist}", "cyan")
     cprint("=" * w, "white", bold=True)
     print()
 
@@ -792,7 +799,7 @@ def ollama_get_saga_films(saga_name: str) -> list:
         f'You are a film expert with encyclopedic knowledge of world cinema.\n\n'
         f'List EVERY theatrically released film in the "{saga_name}" saga/franchise '
         f'in chronological release order.\n\n'
-        f'For "{saga_name}", this includes the COMPLETE list â€” do not omit any film.\n\n'
+        f'For "{saga_name}", this includes the COMPLETE list — do not omit any film.\n\n'
         f'STRICT Rules:\n'
         f'- Include ALL films: part 1, part 2, part 3... every numbered sequel\n'
         f'- Include spin-offs and anthology films\n'
@@ -1185,7 +1192,7 @@ def ollama_get_filmography(person: str, role: str) -> list:
         return titles
 
     except subprocess.TimeoutExpired:
-        log("Ollama timeout â€” retrying with top 20 only...", "WARNING")
+        log("Ollama timeout — retrying with top 20 only...", "WARNING")
         simple_prompt = "\n".join([
             f"List the 20 most famous films where {person} is {role}.",
             "Reply ONLY with JSON:",
@@ -1359,6 +1366,505 @@ def run_artist_mode(person: str, role: str, radarr_titles: set, radarr_tmdb: set
     added = []
     if args.auto:
         log(f"AUTO mode -- adding {len(output)} films to Radarr")
+        for m in output:
+            if add_to_radarr(m):
+                added.append(m["title"])
+                RUN_STATS["added"] += 1
+                BLACKLIST.add(m["title"])
+    else:
+        cprint("Add to Radarr?", "white", bold=True)
+        choice = input("  (a=all / o=one by one / n=no): ").lower().strip()
+        if choice == "a":
+            for m in output:
+                if add_to_radarr(m):
+                    added.append(m["title"])
+                    RUN_STATS["added"] += 1
+                    BLACKLIST.add(m["title"])
+        elif choice == "o":
+            for m in missing:
+                rep = input(
+                    f"  + {m['title']} ({m['year']}) IMDb:{m['rating']:.1f}  add? (y/n): "
+                ).lower()
+                if rep == "y":
+                    lk = m["lookup"]
+                    payload = {
+                        "title": lk["title"], "year": lk.get("year"),
+                        "rating": m["rating"], "score": m["score"],
+                        "reasons": m["reasons"], "tmdbId": lk["tmdbId"],
+                        "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
+                        "source": m["source"],
+                    }
+                    if add_to_radarr(payload):
+                        added.append(m["title"])
+                        RUN_STATS["added"] += 1
+                        BLACKLIST.add(m["title"])
+                else:
+                    bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
+                    if bl_rep == "y":
+                        BLACKLIST.add(m["title"])
+
+    if added:
+        cprint(f"\n  {len(added)} film(s) added to Radarr!", "green", bold=True)
+
+    save_blacklist(BLACKLIST)
+    cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
+    cprint(f"  Log saved: {log_file}", "gray")
+
+
+# =========================
+# STATS
+# =========================
+def run_stats(radarr: list):
+    """Display collection statistics."""
+    w = 70
+    print()
+    cprint("=" * w, "white", bold=True)
+    cprint(f"  COLLECTION STATS          {datetime.now().strftime('%Y-%m-%d  %H:%M')}", "white", bold=True)
+    cprint("=" * w, "white", bold=True)
+    print()
+
+    total = len(radarr)
+    cprint(f"  Total films: {total}", "white", bold=True)
+    print()
+
+    # Genres
+    genre_count = {}
+    for m in radarr:
+        for g in m.get("genres", []):
+            genre_count[g] = genre_count.get(g, 0) + 1
+    top_genres = sorted(genre_count.items(), key=lambda x: x[1], reverse=True)[:8]
+    cprint("  Top genres:", "cyan", bold=True)
+    for g, c in top_genres:
+        bar = "█" * int(c / total * 30)
+        pct = int(c / total * 100)
+        cprint(f"    {g:<20} {bar:<30} {c} ({pct}%)", "cyan")
+    print()
+
+    # Decades
+    decade_count = {}
+    for m in radarr:
+        year = m.get("year", 0)
+        if year:
+            decade = (year // 10) * 10
+            decade_count[decade] = decade_count.get(decade, 0) + 1
+    top_decades = sorted(decade_count.items(), key=lambda x: x[1], reverse=True)[:6]
+    cprint("  By decade:", "magenta", bold=True)
+    for d, c in top_decades:
+        bar = "█" * int(c / total * 30)
+        pct = int(c / total * 100)
+        cprint(f"    {d}s{'':<17} {bar:<30} {c} ({pct}%)", "magenta")
+    print()
+
+    # Ratings distribution
+    ratings = [m.get("ratings", {}).get("value", 0) for m in radarr
+               if m.get("ratings", {}).get("value", 0) > 0]
+    if ratings:
+        avg = round(sum(ratings) / len(ratings), 1)
+        above8 = sum(1 for r in ratings if r >= 8.0)
+        above7 = sum(1 for r in ratings if 7.0 <= r < 8.0)
+        cprint("  Ratings:", "yellow", bold=True)
+        cprint(f"    Average IMDb rating: {avg}", "yellow")
+        cprint(f"    8.0+  (masterpieces): {above8} films ({int(above8/total*100)}%)", "yellow")
+        cprint(f"    7.0-8.0 (great):      {above7} films ({int(above7/total*100)}%)", "yellow")
+    print()
+
+    # Blacklist info
+    cprint("  Blacklist:", "gray", bold=True)
+    cprint(f"    {len(BLACKLIST)} titles already proposed or owned", "gray")
+    print()
+
+    cprint("=" * w, "white", bold=True)
+    print()
+
+
+# =========================
+# WATCHLIST IMPORT
+# =========================
+def run_watchlist(filepath: str, radarr_titles: set, radarr_tmdb: set):
+    """Import films from Letterboxd or IMDb CSV watchlist."""
+    import csv
+
+    if not os.path.exists(filepath):
+        log(f"Watchlist file not found: {filepath}", "ERROR")
+        return
+
+    titles = []
+    try:
+        with open(filepath, encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            headers = reader.fieldnames or []
+            log(f"CSV headers: {headers}", "DEBUG")
+
+            for row in reader:
+                # Letterboxd format
+                if "Name" in row:
+                    title = row.get("Name", "").strip()
+                    year  = row.get("Year", "").strip()
+                    if title:
+                        titles.append((title, year))
+                # IMDb format
+                elif "Title" in row:
+                    title = row.get("Title", "").strip()
+                    year  = row.get("Year", "").strip()
+                    if title:
+                        titles.append((title, year))
+                # Generic fallback
+                elif row:
+                    first_val = list(row.values())[0].strip()
+                    if first_val:
+                        titles.append((first_val, ""))
+
+    except Exception as e:
+        log(f"Error reading watchlist: {e}", "ERROR")
+        return
+
+    if not titles:
+        log("No titles found in watchlist file.", "WARNING")
+        return
+
+    cprint(f"  {len(titles)} films found in watchlist", "white", bold=True)
+    cprint("-" * 70, "gray")
+    print()
+
+    missing  = []
+    owned    = []
+    seen     = set()
+
+    for title, year in titles:
+        if title in radarr_titles or title in BLACKLIST:
+            log(f"  Already owned: {title}", "INFO")
+            owned.append(title)
+            continue
+
+        omdb = get_omdb_full(title, year=int(year) if year.isdigit() else None)
+        if not omdb:
+            log(f"  OMDb not found: {title}", "DEBUG")
+            continue
+        if omdb["title"] in radarr_titles or omdb["title"] in BLACKLIST:
+            log(f"  Already owned: {omdb['title']}", "INFO")
+            owned.append(omdb["title"])
+            continue
+        if omdb["title"] in seen:
+            continue
+        seen.add(omdb["title"])
+
+        lookup = get_radarr_lookup(omdb["title"], omdb["year"])
+        if not lookup:
+            log(f"  Radarr lookup failed: {omdb['title']}", "DEBUG")
+            continue
+        if lookup.get("tmdbId") in radarr_tmdb:
+            log(f"  Already in Radarr: {omdb['title']}", "INFO")
+            owned.append(omdb["title"])
+            continue
+
+        log(f"  Missing: {omdb['title']} ({omdb['year']}) IMDb:{omdb['rating']:.1f}", "SELECT")
+        missing.append({
+            "title":   omdb["title"], "year":    omdb["year"],
+            "rating":  omdb["rating"], "score":  omdb["rating"],
+            "reasons": ["watchlist"], "lookup":  lookup,
+            "source":  f"watchlist:{os.path.basename(filepath)}",
+            "relaxed": False,
+        })
+
+    print()
+    cprint(f"  Already in your library: {len(owned)} film(s)", "gray")
+    cprint(f"  Missing: {len(missing)} film(s)", "yellow", bold=True)
+
+    if not missing:
+        cprint("  Your watchlist is already complete in Radarr!", "green", bold=True)
+        return
+
+    missing.sort(key=lambda x: x["year"])
+
+    output = []
+    for m in missing:
+        lk = m["lookup"]
+        output.append({
+            "title": lk["title"], "year": lk.get("year"),
+            "rating": m["rating"], "score": m["score"],
+            "reasons": m["reasons"], "tmdbId": lk["tmdbId"],
+            "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
+            "source": m["source"],
+        })
+
+    json_file = f"reco_{today_str}.json"
+    with open(json_file, "w", encoding="utf-8") as f:
+        json.dump(output, f, indent=4, ensure_ascii=False)
+    log(f"Results saved -> {json_file}")
+
+    print()
+    cprint("=" * 90, "white", bold=True)
+    cprint(f"  WATCHLIST MISSING  --  {len(missing)} film(s) to add", "white", bold=True)
+    cprint("=" * 90, "white", bold=True)
+    print()
+    for i, m in enumerate(missing, 1):
+        cprint(f"  {i:2d}.  {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}", "cyan")
+    print()
+
+    added = []
+    if args.auto:
+        for m in output:
+            if add_to_radarr(m):
+                added.append(m["title"])
+                RUN_STATS["added"] += 1
+                BLACKLIST.add(m["title"])
+    else:
+        cprint("Add to Radarr?", "white", bold=True)
+        choice = input("  (a=all / o=one by one / n=no): ").lower().strip()
+        if choice == "a":
+            for m in output:
+                if add_to_radarr(m):
+                    added.append(m["title"])
+                    RUN_STATS["added"] += 1
+                    BLACKLIST.add(m["title"])
+        elif choice == "o":
+            for m in missing:
+                rep = input(
+                    f"  + {m['title']} ({m['year']}) IMDb:{m['rating']:.1f}  add? (y/n): "
+                ).lower()
+                if rep == "y":
+                    lk = m["lookup"]
+                    payload = {
+                        "title": lk["title"], "year": lk.get("year"),
+                        "rating": m["rating"], "score": m["score"],
+                        "reasons": m["reasons"], "tmdbId": lk["tmdbId"],
+                        "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
+                        "source": m["source"],
+                    }
+                    if add_to_radarr(payload):
+                        added.append(m["title"])
+                        RUN_STATS["added"] += 1
+                        BLACKLIST.add(m["title"])
+                else:
+                    bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
+                    if bl_rep == "y":
+                        BLACKLIST.add(m["title"])
+
+    if added:
+        cprint(f"\n  {len(added)} film(s) added to Radarr!", "green", bold=True)
+
+    save_blacklist(BLACKLIST)
+    cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
+    cprint(f"  Log saved: {log_file}", "gray")
+
+
+# =========================
+# ANALYZE
+# =========================
+def build_collection_profile(radarr: list) -> dict:
+    """Build statistical profile of the collection."""
+    genre_count   = {}
+    decade_count  = {}
+    director_count = {}
+    ratings       = []
+    total         = len(radarr)
+
+    for m in radarr:
+        for g in m.get("genres", []):
+            genre_count[g] = genre_count.get(g, 0) + 1
+        year = m.get("year", 0)
+        if year:
+            decade = (year // 10) * 10
+            decade_count[decade] = decade_count.get(decade, 0) + 1
+        rating = m.get("ratings", {}).get("value", 0)
+        if rating > 0:
+            ratings.append(rating)
+
+    top_genres   = sorted(genre_count.items(), key=lambda x: x[1], reverse=True)[:6]
+    top_decades  = sorted(decade_count.items(), key=lambda x: x[1], reverse=True)[:4]
+    avg_rating   = round(sum(ratings) / len(ratings), 1) if ratings else 0
+    sample_titles = [m.get("title", "") for m in radarr if m.get("title")][:30]
+
+    return {
+        "total":        total,
+        "top_genres":   top_genres,
+        "top_decades":  top_decades,
+        "avg_rating":   avg_rating,
+        "sample_titles": sample_titles,
+    }
+
+
+def ollama_analyze_collection(profile: dict) -> tuple:
+    """Ask Ollama to analyze the collection and suggest directions."""
+    if not OLLAMA_OK:
+        return "", []
+
+    genres_str  = ", ".join(f"{g} ({c})" for g, c in profile["top_genres"])
+    decades_str = ", ".join(f"{d}s ({c})" for d, c in profile["top_decades"])
+    titles_str  = "\n".join(f"- {t}" for t in profile["sample_titles"][:25])
+
+    prompt = "\n".join([
+        "You are an expert film curator analyzing a personal movie collection.",
+        "",
+        f"Collection size: {profile['total']} films",
+        f"Average IMDb rating: {profile['avg_rating']}",
+        f"Top genres: {genres_str}",
+        f"Top decades: {decades_str}",
+        "",
+        "Sample of films in collection:",
+        titles_str,
+        "",
+        "Based on this collection, write a short personalized analysis (3-4 paragraphs):",
+        "1. Describe the cinephile profile (what kind of viewer this person is)",
+        "2. Identify strengths (what is well covered)",
+        "3. Identify gaps (what important films/directors/movements are missing)",
+        "4. Suggest 3 specific directions to explore",
+        "",
+        "Then provide exactly 10 film recommendations that fill the detected gaps.",
+        "These must be films NOT in the collection already.",
+        "",
+        "IMPORTANT: You MUST respond in this EXACT two-part format, do not skip either part:",
+        "",
+        "ANALYSIS:",
+        "[write your analysis here - 3 to 4 paragraphs]",
+        "",
+        "RECOMMENDATIONS:",
+        '{"films": ["Title 1", "Title 2", "Title 3", "Title 4", "Title 5", "Title 6", "Title 7", "Title 8", "Title 9", "Title 10"]}',
+        "",
+        "The RECOMMENDATIONS section is MANDATORY. Always end your response with the JSON.",
+    ])
+
+    cprint("  [Ollama] Analyzing your collection...", "magenta")
+    try:
+        _timeout = None if getattr(args, "no_timeout", False) else 180
+        import copy
+        env = copy.copy(os.environ)
+        env["TERM"] = "dumb"
+        env["NO_COLOR"] = "1"
+        result = subprocess.run(
+            ["ollama", "run", OLLAMA_MODEL],
+            input=prompt, text=True, capture_output=True,
+            timeout=_timeout, encoding="utf-8", errors="replace", env=env)
+        raw = result.stdout.strip()
+
+        # Parse analysis text
+        analysis = ""
+        films    = []
+
+        if "ANALYSIS:" in raw:
+            parts = raw.split("RECOMMENDATIONS:")
+            analysis = parts[0].replace("ANALYSIS:", "").strip()
+            if len(parts) > 1:
+                rec_part = parts[1].strip()
+                m = re.search(r'"films"\s*:\s*\[([^\]]+)\]', rec_part, re.DOTALL)
+                if m:
+                    try:
+                        items = re.findall(r'"([^"]{2,80})"', m.group(0))
+                        films = [i for i in items if i != "films"]
+                    except:
+                        pass
+
+        return analysis, films
+
+    except subprocess.TimeoutExpired:
+        log("Ollama timeout on analysis", "WARNING")
+        return "", []
+    except Exception as e:
+        log(f"Ollama error: {e}", "ERROR")
+        return "", []
+
+
+def run_analyze(radarr: list, radarr_titles: set, radarr_tmdb: set):
+    """Run AI-powered collection analysis."""
+    w = 90
+    print()
+    cprint("=" * w, "white", bold=True)
+    cprint(f"  COLLECTION ANALYSIS       {datetime.now().strftime('%Y-%m-%d  %H:%M')}", "white", bold=True)
+    cprint("=" * w, "white", bold=True)
+    print()
+
+    cprint(f"  Analyzing {len(radarr)} films...", "gray")
+    print()
+
+    profile = build_collection_profile(radarr)
+    analysis, film_suggestions = ollama_analyze_collection(profile)
+
+    if analysis:
+        cprint("-" * w, "gray")
+        print()
+        # Print analysis word-wrapped at 86 chars
+        for para in analysis.split("\n"):
+            para = para.strip()
+            if not para:
+                print()
+                continue
+            # Word wrap
+            words = para.split()
+            line  = "  "
+            for word in words:
+                if len(line) + len(word) + 1 > 88:
+                    cprint(line, "white")
+                    line = "  " + word + " "
+                else:
+                    line += word + " "
+            if line.strip():
+                cprint(line, "white")
+        print()
+        cprint("-" * w, "gray")
+        print()
+
+    if not film_suggestions:
+        log("No recommendations generated.", "WARNING")
+        return
+
+    cprint(f"  Finding films that match your gaps...", "gray")
+    print()
+
+    missing   = []
+    seen      = set()
+    for raw in film_suggestions:
+        title = _clean_title(raw)
+        if not title or title in radarr_titles or title in BLACKLIST or title in seen:
+            continue
+        omdb = get_omdb_full(title)
+        if not omdb:
+            continue
+        if omdb["title"] in radarr_titles or omdb["title"] in BLACKLIST:
+            continue
+        if omdb["rating"] < args.score_relax:
+            continue
+        lookup = get_radarr_lookup(omdb["title"], omdb["year"])
+        if not lookup or lookup.get("tmdbId") in radarr_tmdb:
+            continue
+        seen.add(omdb["title"])
+        log(f"  + {omdb['title']} ({omdb['year']})  IMDb:{omdb['rating']:.1f}", "SELECT")
+        missing.append({
+            "title":   omdb["title"], "year":    omdb["year"],
+            "rating":  omdb["rating"], "score":  round(omdb["rating"] * 1.5, 2),
+            "reasons": ["analysis_gap"], "lookup": lookup,
+            "source":  "analyze", "relaxed": False,
+        })
+
+    if not missing:
+        log("No new films to add.", "WARNING")
+        return
+
+    output = []
+    for m in missing:
+        lk = m["lookup"]
+        output.append({
+            "title": lk["title"], "year": lk.get("year"),
+            "rating": m["rating"], "score": m["score"],
+            "reasons": m["reasons"], "tmdbId": lk["tmdbId"],
+            "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
+            "source": m["source"],
+        })
+
+    json_file = f"reco_{today_str}.json"
+    with open(json_file, "w", encoding="utf-8") as f:
+        json.dump(output, f, indent=4, ensure_ascii=False)
+
+    print()
+    cprint("=" * w, "white", bold=True)
+    cprint(f"  RECOMMENDED TO FILL YOUR GAPS  --  {len(missing)} films", "white", bold=True)
+    cprint("=" * w, "white", bold=True)
+    print()
+    for i, m in enumerate(missing, 1):
+        cprint(f"  {i:2d}.  {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}", "cyan")
+    print()
+
+    added = []
+    if args.auto:
         for m in output:
             if add_to_radarr(m):
                 added.append(m["title"])
@@ -1643,7 +2149,7 @@ def main():
     log(f"Blacklist loaded: {len(BLACKLIST)} titles")
     print_header(len(BLACKLIST), genre_filter=args.genre)
 
-    # Build source pool â€” filter by genre if --genre is specified
+    # Build source pool — filter by genre if --genre is specified
     pool = [m for m in radarr if m.get("title")]
     if args.genre:
         target_genres = _build_target_genres(args.genre)
@@ -1667,13 +2173,31 @@ def main():
         log(f"Genre filter '{args.genre}': {len(filtered_pool)} matching films in library", "INFO")
         pool = filtered_pool
 
-    # â”€â”€ --saga mode: complete film sagas/franchises â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── --stats mode ─────────────────────────────────────────────────────
+    if args.stats:
+        run_stats(radarr)
+        return
+    # ─────────────────────────────────────────────────────────────────────
+
+    # ── --watchlist mode ─────────────────────────────────────────────────
+    if args.watchlist:
+        run_watchlist(args.watchlist, radarr_titles, radarr_tmdb)
+        return
+    # ─────────────────────────────────────────────────────────────────────
+
+    # ── --analyze mode ────────────────────────────────────────────────────
+    if args.analyze:
+        run_analyze(radarr, radarr_titles, radarr_tmdb)
+        return
+    # ─────────────────────────────────────────────────────────────────────
+
+    # ── --saga mode: complete film sagas/franchises ──────────────────────
     if args.saga:
         run_saga_mode(radarr_titles, radarr_tmdb)
         return
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ─────────────────────────────────────────────────────────────────────
 
-    # â”€â”€ artist modes: --director / --actor / --composer / --author â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── artist modes: --director / --actor / --composer / --author ─────────
     artist_mode = None
     if args.director:
         artist_mode = ("director", args.director)
@@ -1688,9 +2212,9 @@ def main():
         role, person = artist_mode
         run_artist_mode(person, role, radarr_titles, radarr_tmdb)
         return
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ─────────────────────────────────────────────────────────────────────
 
-    # â”€â”€ --mood mode: generate directly from atmosphere description â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── --mood mode: generate directly from atmosphere description ────────
     if args.mood and not args.like:
         cprint("-" * 70, "gray")
         mood_titles = ollama_suggest_from_mood(args.mood)
@@ -1714,7 +2238,7 @@ def main():
                 continue
             if omdb["rating"] < args.score_relax:
                 continue
-            # For mood mode, skip genre/score filtering â€” Ollama chose these for the mood
+            # For mood mode, skip genre/score filtering — Ollama chose these for the mood
             lookup = get_radarr_lookup(omdb["title"], omdb["year"])
             if not lookup or lookup.get("tmdbId") in radarr_tmdb:
                 continue
@@ -1782,9 +2306,9 @@ def main():
         cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
         cprint(f"  Log saved: {log_file}", "gray")
         return
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ─────────────────────────────────────────────────────────────────────
 
-    # â”€â”€ --like mode: use a specific film as the only source â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── --like mode: use a specific film as the only source ──────────────
     if args.like:
         cprint("-" * 70, "gray")
         like_titles = ollama_suggest_from_title(args.like)
@@ -1859,7 +2383,7 @@ def main():
         cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
         cprint(f"  Log saved: {log_file}", "gray")
         return
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ─────────────────────────────────────────────────────────────────────
 
     random.shuffle(pool)
     sources = pool[:args.sources]
