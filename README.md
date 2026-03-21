@@ -44,8 +44,16 @@ python newmovies.py --mood "slow burn thriller" --genre "Crime"
 ```bash
 python newmovies.py --saga "Star Wars"
 python newmovies.py --saga "Lord of the Rings"
-python newmovies.py --saga "Die Hard"
 python newmovies.py --saga  # auto-detect ALL incomplete sagas in your library
+```
+
+**Explore a filmmaker or artist's complete filmography:**
+```bash
+python newmovies.py --director "Stanley Kubrick"   # all films you're missing
+python newmovies.py --director "Wes Anderson"
+python newmovies.py --actor "Al Pacino"
+python newmovies.py --composer "John Williams"
+python newmovies.py --author "Stephen King"        # all film adaptations
 ```
 
 **Or just let it run automatically every night:**
@@ -82,6 +90,10 @@ python newmovies.py --auto
 | `--saga "Star Wars"` | Finds all 10 missing Episodes + Rogue One + Solo |
 | `--saga "Die Hard"` | Die Hard 2, Die Hard with a Vengeance, Live Free or Die Hard |
 | `--saga` (auto) | Detects Rocky, LotR, Back to the Future, Matrix... all incomplete |
+| `--director "Wes Anderson"` | Bottle Rocket, Rushmore, Royal Tenenbaums, Grand Budapest Hotel... |
+| `--actor "Al Pacino"` | Serpico, Dog Day Afternoon, Godfather II, Scarface, Carlito's Way... |
+| `--composer "John Williams"` | Jaws, Raiders, Home Alone, Schindler's List, Empire Strikes Back... |
+| `--author "Stephen King"` | Carrie, The Shining, Stand by Me, Misery, The Mist... |
 
 ---
 
@@ -187,6 +199,13 @@ python newmovies.py --saga "Harry Potter"
 python newmovies.py --saga "Lord of the Rings"
 python newmovies.py --saga          # auto-detect all incomplete sagas
 
+# Explore a filmography
+python newmovies.py --director "Stanley Kubrick"
+python newmovies.py --actor "Al Pacino"
+python newmovies.py --composer "Ennio Morricone"
+python newmovies.py --author "Philip K. Dick"
+python newmovies.py --actor "Al Pacino" --artist-top 20  # limit to top 20
+
 # Reset the blacklist
 python newmovies.py --resetblacklist
 ```
@@ -208,6 +227,11 @@ python newmovies.py --resetblacklist
 | `--fd` | 2030 | Maximum release year |
 | `--no-embed` | off | Disable plot embeddings (faster, less precise) |
 | `--saga` | off | Complete a franchise: `--saga "Star Wars"` or `--saga` for auto-detection |
+| `--director` | off | Add missing films by a director (e.g. `--director "Kubrick"`) |
+| `--actor` | off | Add missing films featuring an actor (e.g. `--actor "Al Pacino"`) |
+| `--composer` | off | Add missing films scored by a composer (e.g. `--composer "Hans Zimmer"`) |
+| `--author` | off | Add missing film adaptations of an author (e.g. `--author "Stephen King"`) |
+| `--artist-top` | 0 | Limit filmography results (0 = all, useful for actors with huge careers) |
 | `--resetblacklist` | off | Clear the blacklist file |
 | `--debug` | off | Verbose output |
 

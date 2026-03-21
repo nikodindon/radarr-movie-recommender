@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-newmovies_v19.py -- Radarr Movie Recommender
+newmovies_v20.py -- Radarr Movie Recommender
 
-v19 changes:
-- --saga: automatically complete film sagas/franchises in your library
-- --saga "Name": target a specific saga (Star Wars, Lord of the Rings, etc.)
-- Auto-detection mode: finds all incomplete sagas in your library
+v20 changes:
+- --director "Name": add all films by a director you are missing
+- --actor "Name": add all films featuring an actor you are missing
+- --composer "Name": add all films scored by a composer you are missing
+- --author "Name": add all film adaptations of an author's works you are missing
 """
 
 import sys
@@ -109,7 +110,7 @@ ADJACENT_GENRES = {
 # =========================
 # ARGUMENTS
 # =========================
-parser = argparse.ArgumentParser(description="Radarr Movie Recommender v19")
+parser = argparse.ArgumentParser(description="Radarr Movie Recommender v20")
 parser.add_argument("--sd",          type=int,   default=1970)
 parser.add_argument("--fd",          type=int,   default=2030)
 parser.add_argument("--score",       type=float, default=6.5)
@@ -128,8 +129,18 @@ parser.add_argument("--like",          type=str, default=None,
     help="Get recommendations based on a specific film title (even if not in your library)")
 parser.add_argument("--resetblacklist",  action="store_true",
     help="Reset the blacklist file (keeps Radarr library titles)")
-parser.add_argument("--saga",   type=str, default=None, nargs="?", const="__auto__",
+parser.add_argument("--saga",     type=str, default=None, nargs="?", const="__auto__",
     help="Complete saga/franchise films. Use alone for auto-detection, or specify: --saga \"Star Wars\"")
+parser.add_argument("--director",  type=str, default=None,
+    help="Add missing films by a director (e.g. --director \"Stanley Kubrick\")")
+parser.add_argument("--actor",     type=str, default=None,
+    help="Add missing films featuring an actor (e.g. --actor \"Al Pacino\")")
+parser.add_argument("--composer",  type=str, default=None,
+    help="Add missing films scored by a composer (e.g. --composer \"Hans Zimmer\")")
+parser.add_argument("--author",    type=str, default=None,
+    help="Add missing film adaptations of an author (e.g. --author \"Stephen King\")")
+parser.add_argument("--artist-top", type=int, default=0,
+    help="Limit films retrieved per artist (default: 0 = all, e.g. --artist-top 20 for top 20 only)")
 args = parser.parse_args()
 
 # =========================
@@ -182,7 +193,7 @@ def print_header(blacklist_size=0, genre_filter=None):
     w   = 70
     now = datetime.now().strftime("%Y-%m-%d  %H:%M")
     cprint("=" * w, "white", bold=True)
-    cprint(f"  RADARR MOVIE RECOMMENDER  v19          {now}", "white", bold=True)
+    cprint(f"  RADARR MOVIE RECOMMENDER  v20          {now}", "white", bold=True)
     cprint(f"  Model: {OLLAMA_MODEL:<20} Blacklist: {blacklist_size} titles", "gray")
     cprint(f"  Quality profile: {QUALITY_PROFILE_ID:<10} Availability: {MINIMUM_AVAILABILITY}", "gray")
     if genre_filter:
@@ -195,6 +206,14 @@ def print_header(blacklist_size=0, genre_filter=None):
         cprint(f"  Saga: {args.saga}", "cyan")
     elif hasattr(args, "saga") and args.saga == "__auto__":
         cprint(f"  Saga: auto-detection", "cyan")
+    if hasattr(args, "director") and args.director:
+        cprint(f"  Director: {args.director}", "cyan")
+    if hasattr(args, "actor") and args.actor:
+        cprint(f"  Actor: {args.actor}", "cyan")
+    if hasattr(args, "composer") and args.composer:
+        cprint(f"  Composer: {args.composer}", "cyan")
+    if hasattr(args, "author") and args.author:
+        cprint(f"  Author: {args.author}", "cyan")
     cprint("=" * w, "white", bold=True)
     print()
 
@@ -1032,6 +1051,331 @@ def run_saga_mode(radarr_titles: set, radarr_tmdb: set):
     cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
     cprint(f"  Log saved: {log_file}", "gray")
 
+
+def ollama_get_filmography(person: str, role: str) -> list:
+    """Ask Ollama for the complete filmography of a person based on their role."""
+    if not OLLAMA_OK:
+        return []
+
+    role_descriptions = {
+        "director": (
+            f"List ALL theatrical films directed by {person}.\n"
+            f"Include only films where {person} is the main director."
+        ),
+        "actor": (
+            f"List ALL theatrical films where {person} has a significant role (lead or major supporting).\n"
+            f"Include only films where {person} actually appears on screen."
+        ),
+        "composer": (
+            f"List ALL theatrical films for which {person} composed the original score/soundtrack.\n"
+            f"Include only films where {person} is the main composer."
+        ),
+        "author": (
+            f"List ALL theatrical films adapted from works written by {person}.\n"
+            f"Include novels, short stories, and plays adapted into films."
+        ),
+    }
+
+    role_desc = role_descriptions.get(role, f"List ALL theatrical films associated with {person}.")
+
+    top_n = getattr(args, 'artist_top', 0)
+    limit_instruction = (
+        f'- List the {top_n} most notable films only'
+        if top_n > 0 else
+        '- Include ALL films, do not omit any'
+    )
+    prompt = "\n".join([
+        "You are a film expert with encyclopedic knowledge of world cinema.",
+        "",
+        role_desc,
+        "",
+        "STRICT Rules:",
+        "- Only REAL theatrically released films (NO TV shows, NO shorts)",
+        limit_instruction.strip(),
+        "- List in chronological release order",
+        "- Use EXACT English theatrical release title",
+        "- Each entry must be ONLY the film title, nothing else",
+        "",
+        'Respond ONLY with this exact JSON (no other text):',
+        '{"films": ["Title 1", "Title 2", "Title 3"]}',
+    ])
+
+    role_labels = {
+        "director": "films directed by",
+        "actor":    "films featuring",
+        "composer": "films scored by",
+        "author":   "adaptations of",
+    }
+    label = role_labels.get(role, "films for")
+    cprint(f'  [Ollama] Getting {label} "{person}"...', "magenta")
+
+    try:
+        if args.debug:
+            cprint(f'  [DEBUG] Starting subprocess for {person}...', "gray")
+        import copy
+        env = copy.copy(os.environ)
+        env["TERM"] = "dumb"
+        env["NO_COLOR"] = "1"
+        result = subprocess.run(
+            ["ollama", "run", OLLAMA_MODEL],
+            input=prompt, text=True, capture_output=True,
+            timeout=240, encoding="utf-8", errors="replace",
+            env=env)
+        # Strip ANSI escape codes from output
+        raw = re.sub(r'\[[0-9;?]*[a-zA-Z]', '', result.stdout)
+        raw = re.sub(r'\[[0-9;?]*[hlm]', '', raw)
+        raw = raw.strip()
+        logger.debug(f"Ollama raw output for {person}: {raw[:500]}")
+
+        # Try JSON parse
+        m = re.search(r'\{[^{}]*"films"\s*:\s*\[', raw, re.DOTALL)
+        if m:
+            start = m.start()
+            depth, end = 0, start
+            for i, ch in enumerate(raw[start:]):
+                if ch == '{': depth += 1
+                elif ch == '}': depth -= 1
+                if depth == 0:
+                    end = start + i + 1
+                    break
+            try:
+                data = json.loads(raw[start:end])
+                titles = [t.strip() for t in data.get("films", []) if t.strip()]
+                cprint(f'  [Ollama] {len(titles)} films found', "magenta")
+                return titles
+            except:
+                pass
+
+        # Fallback: line by line
+        titles = []
+        for line in raw.split("\n"):
+            m2 = re.match(r'^(?:\d+[\.)\)]|[-*])\s*(.+)$', line.strip())
+            if m2:
+                t = re.sub(r'\s*\(\d{4}\)\s*$', '', m2.group(1).strip().strip('"\'\''))
+                if 2 < len(t) < 100:
+                    titles.append(t)
+        if titles:
+            cprint(f'  [Ollama] {len(titles)} films found (fallback)', "magenta")
+        return titles
+
+    except subprocess.TimeoutExpired:
+        log("Ollama timeout — retrying with top 20 only...", "WARNING")
+        simple_prompt = "\n".join([
+            f"List the 20 most famous films where {person} is {role}.",
+            "Reply ONLY with JSON:",
+            '{"films": ["Title 1", "Title 2", "Title 3"]}',
+        ])
+        try:
+            result2 = subprocess.run(
+                ["ollama", "run", OLLAMA_MODEL],
+                input=simple_prompt, text=True, capture_output=True,
+                timeout=120, encoding="utf-8", errors="replace")
+            raw2 = result2.stdout
+            m2 = re.search(r'\{[^{}]*"films"\s*:\s*\[', raw2, re.DOTALL)
+            if m2:
+                start = m2.start()
+                depth, end = 0, start
+                for i, ch in enumerate(raw2[start:]):
+                    if ch == '{': depth += 1
+                    elif ch == '}': depth -= 1
+                    if depth == 0:
+                        end = start + i + 1
+                        break
+                data = json.loads(raw2[start:end])
+                titles = [t.strip() for t in data.get("films", []) if t.strip()]
+                if titles:
+                    cprint(f'  [Ollama] {len(titles)} films found (retry)', "magenta")
+                    return titles
+        except Exception:
+            pass
+        log("Ollama retry also failed", "WARNING")
+        return []
+    except Exception as e:
+        log(f"Ollama error in filmography: {type(e).__name__}: {e}", "ERROR")
+        import traceback
+        if args.debug:
+            cprint(f"  [DEBUG] Full traceback: {traceback.format_exc()}", "red")
+        return []
+
+
+def run_artist_mode(person: str, role: str, radarr_titles: set, radarr_tmdb: set):
+    """Handle --director / --actor / --composer / --author modes."""
+
+    role_labels = {
+        "director": "directed by",
+        "actor":    "featuring",
+        "composer": "scored by",
+        "author":   "adapted from",
+    }
+    label = role_labels.get(role, "by")
+
+    cprint("-" * 70, "gray")
+    cprint(f'  Looking for films {label} "{person}"...', "white", bold=True)
+    print()
+
+    films_raw = ollama_get_filmography(person, role)
+    if not films_raw:
+        log(f'No films found for {role}: "{person}"', "WARNING")
+        return
+
+    cprint(f"  Validating {len(films_raw)} titles against your library...", "gray")
+    print()
+
+    missing  = []
+    owned    = []
+    seen_titles = set()  # deduplication
+
+    for raw in films_raw:
+        # Clean title
+        raw_clean = re.sub(r'\s*\(\d{4}\)\s*$', '', str(raw).strip())
+        raw_clean = re.sub(r'\s+is\s+not.*$', '', raw_clean, flags=re.IGNORECASE)
+        raw_clean = re.sub(r'\s*,.*$', '', raw_clean)
+        title = _clean_title(raw_clean)
+        if not title or len(title) < 2 or len(title.split()) > 12:
+            continue
+
+        # Already owned?
+        if title in radarr_titles or title in BLACKLIST:
+            log(f'  Already owned: {title}', "INFO")
+            owned.append(title)
+            continue
+
+        # Validate via OMDb
+        omdb = get_omdb_full(title)
+        if not omdb:
+            log(f'  OMDb not found: {title}', "DEBUG")
+            continue
+        if omdb["title"] in radarr_titles or omdb["title"] in BLACKLIST:
+            log(f'  Already owned: {omdb["title"]}', "INFO")
+            owned.append(omdb["title"])
+            continue
+        min_rating = 5.5 if role in ("actor", "author") else 4.0
+        if omdb["rating"] == 0.0 or (omdb["rating"] < min_rating and omdb["rating"] > 0):
+            log(f'  Filtered (low rating): {omdb["title"]} IMDb:{omdb["rating"]}', "DEBUG")
+            continue
+
+        # Radarr lookup
+        lookup = get_radarr_lookup(omdb["title"], omdb["year"])
+        if not lookup:
+            log(f'  Radarr lookup failed: {omdb["title"]}', "DEBUG")
+            continue
+        if lookup.get("tmdbId") in radarr_tmdb:
+            log(f'  Already in Radarr (tmdbId): {omdb["title"]}', "INFO")
+            owned.append(omdb["title"])
+            continue
+
+        if omdb["title"] in seen_titles:
+            log(f'  Duplicate skipped: {omdb["title"]}', "DEBUG")
+            continue
+        seen_titles.add(omdb["title"])
+        log(f'  Missing: {omdb["title"]} ({omdb["year"]}) IMDb:{omdb["rating"]:.1f}', "SELECT")
+        missing.append({
+            "title":   omdb["title"],
+            "year":    omdb["year"],
+            "rating":  omdb["rating"],
+            "score":   omdb["rating"],
+            "reasons": [f"{role}:{person}"],
+            "lookup":  lookup,
+            "source":  f"{role}:{person}",
+            "relaxed": False,
+        })
+
+    # Summary
+    print()
+    cprint(f"  Already in your library: {len(owned)} film(s)", "gray")
+
+    if not missing:
+        cprint(f'  Your {person} collection is complete!', "green", bold=True)
+        return
+
+    cprint(f"  Missing: {len(missing)} film(s)", "yellow", bold=True)
+
+    # Sort by year
+    missing.sort(key=lambda x: x["year"])
+
+    # Build output
+    output = []
+    for m in missing:
+        lk = m["lookup"]
+        output.append({
+            "title":     lk["title"],
+            "year":      lk.get("year"),
+            "rating":    m["rating"],
+            "score":     m["score"],
+            "reasons":   m["reasons"],
+            "tmdbId":    lk["tmdbId"],
+            "titleSlug": lk["titleSlug"],
+            "images":    lk.get("images", []),
+            "source":    m["source"],
+        })
+
+    # Save JSON
+    json_file = f"reco_{today_str}.json"
+    with open(json_file, "w", encoding="utf-8") as f:
+        json.dump(output, f, indent=4, ensure_ascii=False)
+    log(f"Results saved -> {json_file}")
+
+    # Display
+    print()
+    cprint("=" * 90, "white", bold=True)
+    cprint(
+        f"  MISSING FILMS ({role.upper()}: {person})"
+        f"  --  {len(missing)} film(s) to add",
+        "white", bold=True)
+    cprint("=" * 90, "white", bold=True)
+    print()
+    for i, m in enumerate(missing, 1):
+        cprint(f"  {i:2d}.  {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}", "cyan")
+    print()
+
+    # Add to Radarr
+    added = []
+    if args.auto:
+        log(f"AUTO mode -- adding {len(output)} films to Radarr")
+        for m in output:
+            if add_to_radarr(m):
+                added.append(m["title"])
+                RUN_STATS["added"] += 1
+                BLACKLIST.add(m["title"])
+    else:
+        cprint("Add to Radarr?", "white", bold=True)
+        choice = input("  (a=all / o=one by one / n=no): ").lower().strip()
+        if choice == "a":
+            for m in output:
+                if add_to_radarr(m):
+                    added.append(m["title"])
+                    RUN_STATS["added"] += 1
+                    BLACKLIST.add(m["title"])
+        elif choice == "o":
+            for m in missing:
+                rep = input(
+                    f"  + {m['title']} ({m['year']}) IMDb:{m['rating']:.1f}  add? (y/n): "
+                ).lower()
+                if rep == "y":
+                    lk = m["lookup"]
+                    payload = {
+                        "title": lk["title"], "year": lk.get("year"),
+                        "rating": m["rating"], "score": m["score"],
+                        "reasons": m["reasons"], "tmdbId": lk["tmdbId"],
+                        "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
+                        "source": m["source"],
+                    }
+                    if add_to_radarr(payload):
+                        added.append(m["title"])
+                        RUN_STATS["added"] += 1
+                        BLACKLIST.add(m["title"])
+                else:
+                    bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
+                    if bl_rep == "y":
+                        BLACKLIST.add(m["title"])
+
+    if added:
+        cprint(f"\n  {len(added)} film(s) added to Radarr!", "green", bold=True)
+
+    save_blacklist(BLACKLIST)
+    cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
+    cprint(f"  Log saved: {log_file}", "gray")
+
 # =========================
 # FALLBACK
 # =========================
@@ -1299,6 +1643,23 @@ def main():
     # ── --saga mode: complete film sagas/franchises ──────────────────────
     if args.saga:
         run_saga_mode(radarr_titles, radarr_tmdb)
+        return
+    # ─────────────────────────────────────────────────────────────────────
+
+    # ── artist modes: --director / --actor / --composer / --author ─────────
+    artist_mode = None
+    if args.director:
+        artist_mode = ("director", args.director)
+    elif args.actor:
+        artist_mode = ("actor", args.actor)
+    elif args.composer:
+        artist_mode = ("composer", args.composer)
+    elif args.author:
+        artist_mode = ("author", args.author)
+
+    if artist_mode:
+        role, person = artist_mode
+        run_artist_mode(person, role, radarr_titles, radarr_tmdb)
         return
     # ─────────────────────────────────────────────────────────────────────
 
