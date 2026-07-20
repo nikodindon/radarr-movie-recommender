@@ -1,6 +1,7 @@
 # Fichiers de config locaux
 omdb_apikey.conf
 blacklist.json
+.omdb_cache.json
 
 # Logs et resultats
 logs/
