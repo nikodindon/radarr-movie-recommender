@@ -66,6 +66,7 @@ async def start_run(
     # newmovies.args. Empty string = use default (10 / 25).
     top: str = Form(""),
     suggestions: str = Form(""),
+    omdb_fallback: str = Form(""),
 ):
     """Démarre un run en background et redirige vers la page de run."""
     if mode not in ("library", "mood", "like"):
@@ -99,6 +100,8 @@ async def start_run(
         # V5.16: top / suggestions. None means "use argparse default".
         "top": _int(top),
         "suggestions": _int(suggestions),
+        # V5.22: OMDb fallback checkbox. "on" when checked, None otherwise.
+        "omdb_fallback": omdb_fallback is not None and omdb_fallback == "on",
     }
     runner.run_in_thread(state, params)
     return JSONResponse({"run_id": state.run_id, "redirect": f"/run/{state.run_id}"})

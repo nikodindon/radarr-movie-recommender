@@ -186,6 +186,13 @@ parser.add_argument("--imdb-min", type=float, default=None,
     help="Minimum IMDb rating override (e.g. --imdb-min 7.5)")
 parser.add_argument("--export",        type=str,   default=None,
     help="Export recommendations to file (e.g. --export reco.csv or --export reco.html)")
+# V5.22: OMDb search fallback for artist modes. When set, after
+# the LLM returns its list, we query OMDb's search API for the
+# person (e.g. "kevin james actor") and merge any additional
+# films found. Helps when the LLM omits a famous title
+# (e.g. Paul Blart: Mall Cop for Kevin James).
+parser.add_argument("--omdb-fallback", action="store_true",
+    help="(artist modes) after the LLM returns, query OMDb search to find any missing films by the person")
 args = parser.parse_args()
 
 # =========================
@@ -1195,6 +1202,35 @@ def run_artist_mode(person: str, role: str, radarr_titles: set, radarr_tmdb: set
     if not films_raw:
         log(f'No films found for {role}: "{person}"', "WARNING")
         return
+
+    # V5.22: OMDb search fallback. The LLM sometimes drops famous
+    # films (e.g. "kevin james" forgets Paul Blart: Mall Cop). When
+    # the user sets --omdb-fallback, we also query OMDb's search
+    # API for the person and merge the additional titles. Each
+    # added title is validated through the same OMDb + Radarr +
+    # role-match pipeline below. This complements the LLM
+    # without replacing it (the LLM still picks the bulk of
+    # titles, OMDb just fills gaps).
+    if getattr(args, "omdb_fallback", False):
+        cprint(f"  [omdb-fallback] Searching OMDb for: {person} ({role})", "magenta")
+        try:
+            data = _omdb_request({"s": person, "type": "movie"})
+            if data and data.get("Search"):
+                omdb_titles = [m.get("Title") for m in data["Search"] if m.get("Title")]
+                # Dedupe against LLM output (case-insensitive)
+                llm_set = {t.lower().strip() for t in films_raw}
+                added = [t for t in omdb_titles if t.lower().strip() not in llm_set]
+                if added:
+                    cprint(f"  [omdb-fallback] +{len(added)} extra titles from OMDb", "magenta")
+                    log(f"omdb-fallback: {len(omdb_titles)} results, "
+                        f"{len(added)} new vs LLM", "INFO")
+                    films_raw = list(films_raw) + added
+                else:
+                    cprint(f"  [omdb-fallback] no new titles (LLM already complete)", "magenta")
+            elif data and data.get("Error"):
+                log(f"omdb-fallback: {data['Error']}", "WARNING")
+        except Exception as e:
+            log(f"omdb-fallback error: {e}", "WARNING")
 
     cprint(f"  Validating {len(films_raw)} titles against your library...", "gray")
     print()

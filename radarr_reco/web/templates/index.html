@@ -66,6 +66,13 @@
           <input type="number" name="suggestions" placeholder="25" min="5" max="100" size="6">
         </label>
       </div>
+      <fieldset>
+        <legend>Search behaviour</legend>
+        <label><input type="checkbox" name="omdb_fallback" value="on">
+          OMDb fallback (artist modes only): after the LLM returns, query
+          OMDb search for the person to find any missing films (e.g. if the
+          LLM forgets a famous title). Costs 1-2 OMDb requests.</label>
+      </fieldset>
     </details>
     <button type="submit">Start run</button>
   </form>
