@@ -1016,9 +1016,24 @@ def run_saga_mode(radarr_titles: set, radarr_tmdb: set):
             if omdb["title"] in radarr_titles or omdb["title"] in BLACKLIST:
                 log(f'  Already owned: {omdb["title"]}', "INFO")
                 continue
-            if omdb["rating"] < 5.0:  # very permissive for saga films
+            # V5.11: cumulative filters from the advanced panel.
+            # Same logic as run_artist_mode: --imdb-min (explicit) > hardcoded
+            # default (5.0 for saga, more permissive because franchises vary
+            # wildly in quality). --sd/--fd already handled V5.10. --genre
+            # is new: at least one overlap with the OMDb genre string.
+            if args.imdb_min is not None:
+                min_rating_saga = args.imdb_min
+            else:
+                min_rating_saga = 5.0  # saga default
+            if omdb["rating"] == 0.0 or (omdb["rating"] < min_rating_saga and omdb["rating"] > 0):
                 log(f'  Filtered (low rating): {omdb["title"]} IMDb:{omdb["rating"]}', "DEBUG")
                 continue
+            if args.genre:
+                wanted = {g.strip().lower() for g in args.genre.split(",") if g.strip()}
+                film_genres = {g.strip().lower() for g in omdb.get("genre", "").split(",") if g.strip()}
+                if wanted and not (wanted & film_genres):
+                    log(f'  Filtered (genre): {omdb["title"]} ({omdb.get("genre", "?")}) not in {args.genre}', "DEBUG")
+                    continue
 
             # Radarr lookup
             lookup = get_radarr_lookup(omdb["title"], omdb["year"])
@@ -1201,10 +1216,28 @@ def run_artist_mode(person: str, role: str, radarr_titles: set, radarr_tmdb: set
             log(f'  Already owned: {omdb["title"]}', "INFO")
             owned.append(omdb["title"])
             continue
-        min_rating = 5.5 if role in ("actor", "author") else 4.0
+        # V5.11: cumulative filters from the advanced panel.
+        # Priority: --imdb-min (explicit) > role default (5.5 for
+        # actor/author, 4.0 for director/composer). --genre filters
+        # by overlap with the OMDb genre string. Both only apply
+        # when set (None / empty = no filter).
+        if args.imdb_min is not None:
+            min_rating = args.imdb_min
+        else:
+            min_rating = 5.5 if role in ("actor", "author") else 4.0
         if omdb["rating"] == 0.0 or (omdb["rating"] < min_rating and omdb["rating"] > 0):
             log(f'  Filtered (low rating): {omdb["title"]} IMDb:{omdb["rating"]}', "DEBUG")
             continue
+        if args.genre:
+            # args.genre is comma-separated ("Comedy, Sci-Fi"). We
+            # require at least one overlap with the OMDb genre string.
+            # Case-insensitive on the genre side; OMDb already returns
+            # comma-separated.
+            wanted = {g.strip().lower() for g in args.genre.split(",") if g.strip()}
+            film_genres = {g.strip().lower() for g in omdb.get("genre", "").split(",") if g.strip()}
+            if wanted and not (wanted & film_genres):
+                log(f'  Filtered (genre): {omdb["title"]} ({omdb.get("genre", "?")}) not in {args.genre}', "DEBUG")
+                continue
         # V5.10: year filter from --sd/--fd. Only filters when the
         # user set these (default None means no filter). The artist
         # lookup itself doesn't apply the year, so we post-filter.
