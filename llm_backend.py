@@ -230,6 +230,13 @@ class LLMBackend(ABC):
             f'- Use EXACT English theatrical release title\n'
             f'- Do NOT skip any film, do NOT add comments or notes\n'
             f'- Each entry must be ONLY the film title, nothing else\n'
+            # V5.13: explicit anti-omission reminders. The 35B-Q3
+            # model was dropping 1-3 films on Star Wars / Marvel runs
+            # (e.g. forgetting Episode IV A New Hope). Adding
+            # numbered placeholders forces the model to count and
+            # fill all slots.
+            f'- If the saga has N films, output EXACTLY N entries. Count them.\n'
+            f'- For numbered sagas (Star Wars, Fast & Furious, etc.) include EVERY episode\n'
             f'\nRespond ONLY with this exact JSON (no other text before or after):\n'
             f'{{"films": ["Title 1", "Title 2", "Title 3", "Title 4", "Title 5"]}}'
         )
