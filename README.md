@@ -47,6 +47,60 @@ Your collection grows by itself , every morning if you want, 10 new films picked
 
 ---
 
+## Web UI — review recommendations in your browser
+
+Vague 5 added a FastAPI-based web interface that replaces the terminal
+prompts with clickable buttons. The CLI still works the same as before;
+this is a separate entry point.
+
+```bash
+python newmovies.py --web --web-port 8765
+# then open http://127.0.0.1:8765 in your browser
+```
+
+### What you get
+
+- Pick the run mode (library, mood, like) from a form
+- Watch the LLM + OMDb pipeline run with live log streaming
+- See the 10 final recommendations as cards
+- Click **Accept**, **Refuse**, or **Refuse + Blacklist** per film
+- Click **Push to Radarr** at the bottom to commit accepted films in
+  one batch — refuses are dropped, blacklisted films are saved to the
+  blacklist so they never reappear
+
+### Why the two-step flow
+
+`Accept` records your decision in memory. The actual Radarr POST
+happens on the final **Push to Radarr** button. This lets you change
+your mind before anything is committed — the CLI behaves the same way
+(`o` to review one by one, then commit at the end).
+
+If you prefer immediate-add (every Accept pushes right away), tell me
+and I'll flip the default.
+
+### Arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `--web` | off | Launch the web UI on the host (server blocks until killed) |
+| `--web-port` | env `RADARR_RECO_WEB_PORT` or 8080 | Bind port — set this if 8080 is already taken (e.g. by llama-server) |
+
+The env var `RADARR_RECO_WEB_PORT` is still respected (flag wins over
+env). Binds to `127.0.0.1` only — no auth, no external exposure.
+
+### How it works (one paragraph)
+
+The web runner monkey-patches two module-level functions on
+`newmovies` for the duration of one run: `cprint` (so log lines stream
+to both stdout and the page) and `confirm_and_add` (so each candidate
+is captured into in-memory state instead of prompting). The original
+implementations are restored in a `finally` block, so the CLI is
+untouched. The runner sets `args.dry_run=True` during the run to avoid
+auto-adds, then temporarily flips it off during the `Push to Radarr`
+button so `add_to_radarr` actually pushes.
+
+---
+
 ## What you can do that no other tool offers
 
 ### 🎭 Describe what you're in the mood for — in plain English
@@ -57,6 +111,12 @@ python newmovies.py --mood "noir detective in a rainy city"
 python newmovies.py --mood "feel good sunday afternoon comedy"
 python newmovies.py --mood "mind-bending sci-fi with a twist ending"
 python newmovies.py --mood "heist with a brilliant plan" --imdb-min 7.5
+```
+
+### 🧪 Test without committing anything
+```bash
+python newmovies.py --dry-run        # shows what would be added, writes nothing
+python newmovies.py --dry-run --limit 3   # stop after 3 simulated adds
 ```
 
 ### 🎬 Start from any film — even one you don't own
@@ -164,6 +224,12 @@ Your Radarr library
   Results added to Radarr — with your approval
 ```
 
+**OMDb results are cached on disk** (`.omdb_cache.json` in the repo
+root) so repeated runs on the same films don't burn through your 1000
+requests/day limit. Cache hits return instantly, misses cost one
+request. Cache survives across runs but is invalidated when you delete
+the file.
+
 ---
 
 ## LLM backend — Ollama or llama.cpp (since dev branch)
@@ -223,6 +289,22 @@ ollama pull llama3.1:8b
 cp config.yaml.example config.yaml   # edit with your settings
 ```
 
+**requirements.txt** (core + web UI):
+```text
+PyYAML
+requests
+
+# Web UI (optional — only needed for `python newmovies.py --web`)
+fastapi
+uvicorn
+jinja2
+python-multipart
+```
+
+The web UI deps are also installed by `pip install -r requirements.txt`,
+so you don't have to install them separately. If you only ever use the
+CLI, the web deps sit unused but cost ~30 MB of disk.
+
 **config.yaml:**
 ```yaml
 omdb_keys: your_key1,your_key2
@@ -281,7 +363,14 @@ python newmovies.py --sources 15 --suggestions 20 --top 15
 python newmovies.py --sd 1960 --fd 1990                    # era filter
 
 # Reset
-python newmovies.py --resetblacklist
+python newmovies.py --resetblacklist --yes    # skip the y/n confirm
+
+# Try without committing anything (safe test)
+python newmovies.py --dry-run                 # simulates add_to_radarr, prints WOULD-ADD instead of POSTing
+python newmovies.py --limit 3                 # add at most 3 films this run
+
+# Web UI
+python newmovies.py --web --web-port 8765     # see [Web UI section](#web-ui-review-recommendations-in-your-browser)
 ```
 
 ---
@@ -311,13 +400,18 @@ python newmovies.py --resetblacklist
 | `--sources` | 10 | Source films sampled from your library |
 | `--suggestions` | 14 | Ollama suggestions per source |
 | `--top` | 10 | Final recommendations to keep |
-| `--score` | 6.5 | Minimum IMDb rating (classic mode) |
-| `--score-relax` | 5.9 | IMDb threshold in relaxed fallback |
+| `--score` | 4.0 | Minimum recommendation score (classic mode) |
+| `--score-relax` | 3.5 | Score threshold in relaxed fallback |
 | `--sd` | 1970 | Minimum release year |
 | `--fd` | 2030 | Maximum release year |
 | `--no-embed` | off | Disable plot embeddings (faster) |
 | `--resetblacklist` | off | Clear the blacklist |
 | `--debug` | off | Verbose output |
+| `--dry-run` | off | Simulate without writing to Radarr or blacklist |
+| `--limit` | 0 | Max films to add per run (0 = no limit) |
+| `--yes` | off | Skip the `--resetblacklist` confirmation prompt |
+| `--web` | off | Launch the web UI (see [Web UI section](#web-ui-review-recommendations-in-your-browser)) |
+| `--web-port` | env or 8080 | Port for `--web` (use this if 8080 is taken) |
 
 ---
 
