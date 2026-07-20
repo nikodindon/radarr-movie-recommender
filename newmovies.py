@@ -1008,10 +1008,16 @@ def run_saga_mode(radarr_titles: set, radarr_tmdb: set):
                 log(f'  Already owned: {title}', "INFO")
                 continue
 
-            # Validate via OMDb
+            # Validate via OMDb. If the LLM returned a bare title
+            # (e.g. "Solo" or "Rogue One" for a Star Wars saga),
+            # OMDb may not find it. Try with the saga name prefixed
+            # as a fallback. V5.12.
             omdb = get_omdb_full(title)
             if not omdb:
-                log(f'  OMDb not found: {title}', "DEBUG")
+                # Try "Saga: Title" (Star Wars convention)
+                omdb = get_omdb_full(f"{saga}: {title}")
+            if not omdb:
+                log(f'  OMDb not found (saga {saga}): {title}', "WARNING")
                 continue
             if omdb["title"] in radarr_titles or omdb["title"] in BLACKLIST:
                 log(f'  Already owned: {omdb["title"]}', "INFO")
