@@ -1042,6 +1042,7 @@ def run_saga_mode(radarr_titles: set, radarr_tmdb: set):
             "titleSlug": lk["titleSlug"],
             "images":    lk.get("images", []),
             "source":    m["source"],
+            "lookup":    lk,  # backward-compat for mode 'o' / _build_add_payload (V4.1.1)
         })
 
     # Save JSON
@@ -1234,6 +1235,7 @@ def run_artist_mode(person: str, role: str, radarr_titles: set, radarr_tmdb: set
             "titleSlug": lk["titleSlug"],
             "images":    lk.get("images", []),
             "source":    m["source"],
+            "lookup":    lk,  # backward-compat for mode 'o' / _build_add_payload (V4.1.1)
         })
 
     # Save JSON
@@ -1453,6 +1455,7 @@ def run_watchlist(filepath: str, radarr_titles: set, radarr_tmdb: set):
             "reasons": m["reasons"], "tmdbId": lk["tmdbId"],
             "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
             "source": m["source"],
+            "lookup": lk,  # backward-compat for mode 'o' / _build_add_payload (V4.1.1)
         })
 
     json_file = f"reco_{today_str}.json"
@@ -1624,6 +1627,7 @@ def run_analyze(radarr: list, radarr_titles: set, radarr_tmdb: set):
             "reasons": m["reasons"], "tmdbId": lk["tmdbId"],
             "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
             "source": m["source"],
+            "lookup": lk,  # backward-compat for mode 'o' / _build_add_payload (V4.1.1)
         })
 
     json_file = f"reco_{today_str}.json"
@@ -2132,6 +2136,7 @@ def main():
                 "reasons": m["reasons"], "tmdbId": lk["tmdbId"],
                 "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
                 "source": m["source"],
+                "lookup": lk,  # backward-compat for mode 'o' / _build_add_payload (V4.1.1)
             })
         json_file = f"reco_{today_str}.json"
         with open(json_file, "w", encoding="utf-8") as f:
@@ -2192,6 +2197,7 @@ def main():
                 "reasons": m["reasons"], "tmdbId": lk["tmdbId"],
                 "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
                 "source": m["source"],
+                "lookup": lk,  # backward-compat for mode 'o' / _build_add_payload (V4.1.1)
             })
         json_file = f"reco_{today_str}.json"
         with open(json_file, "w", encoding="utf-8") as f:
