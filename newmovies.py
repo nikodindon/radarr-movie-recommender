@@ -1205,6 +1205,15 @@ def run_artist_mode(person: str, role: str, radarr_titles: set, radarr_tmdb: set
         if omdb["rating"] == 0.0 or (omdb["rating"] < min_rating and omdb["rating"] > 0):
             log(f'  Filtered (low rating): {omdb["title"]} IMDb:{omdb["rating"]}', "DEBUG")
             continue
+        # V5.10: year filter from --sd/--fd. Only filters when the
+        # user set these (default None means no filter). The artist
+        # lookup itself doesn't apply the year, so we post-filter.
+        if args.sd is not None and omdb["year"] and omdb["year"] < args.sd:
+            log(f'  Filtered (before sd={args.sd}): {omdb["title"]} ({omdb["year"]})', "DEBUG")
+            continue
+        if args.fd is not None and omdb["year"] and omdb["year"] > args.fd:
+            log(f'  Filtered (after fd={args.fd}): {omdb["title"]} ({omdb["year"]})', "DEBUG")
+            continue
 
         # Radarr lookup
         lookup = get_radarr_lookup(omdb["title"], omdb["year"])
