@@ -24,3 +24,14 @@ minimum_availability: announced
 # Ollama model to use for suggestions and embeddings
 # Run "ollama pull llama3.1:8b" to download
 ollama_model: llama3.1:8b
+
+# --------------------------------------------------------------------
+# Web UI (Vague 5) - only used when you run `python newmovies.py --web`
+# --------------------------------------------------------------------
+# Priority order: --web-port/--web-host flags > these settings > defaults.
+# Binds to 127.0.0.1 by default (no auth, localhost only). Set host to
+# 0.0.0.0 to expose on the LAN, but be aware there's no authentication
+# — anyone on the network can accept films and add them to Radarr.
+web:
+  host: 127.0.0.1
+  port: 8765

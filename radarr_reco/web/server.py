@@ -182,12 +182,54 @@ async def runs_list(request: Request):
 # --- Entry point ----------------------------------------------------------
 
 def main():
-    """Lance uvicorn. Bind 127.0.0.1, port from env or 8080."""
+    """Lance uvicorn.
+
+    Bind configuration resolution order (highest to lowest):
+      1. --web-port / --web-host flags (set by newmovies.main() via env)
+      2. config.yaml 'web:' section
+      3. RADARR_RECO_WEB_PORT / RADARR_RECO_WEB_HOST env vars
+      4. Defaults (127.0.0.1:8080)
+    """
     import uvicorn
-    host = os.environ.get("RADARR_RECO_WEB_HOST", "127.0.0.1")
-    port = int(os.environ.get("RADARR_RECO_WEB_PORT", "8080"))
+    # Read config.yaml for the 'web' subsection. Use a minimal load so
+    # server.main() can be called without newmovies being imported
+    # (e.g. `python -m radarr_reco.web.server`).
+    web_cfg = _read_web_config()
+    # --web-port flag is already pushed into env by newmovies.main()
+    # (see 'if args.web:' branch). So env wins unless empty.
+    port_str = os.environ.get("RADARR_RECO_WEB_PORT")
+    if not port_str:
+        port_str = str(web_cfg.get("port", "8080"))
+    host = os.environ.get("RADARR_RECO_WEB_HOST")
+    if not host:
+        host = str(web_cfg.get("host", "127.0.0.1"))
+    port = int(port_str)
     print(f"Radarr Recommender UI -> http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="warning")
+
+
+def _read_web_config() -> dict:
+    """Load just the 'web:' subsection of config.yaml.
+
+    Returns {} if config.yaml is missing, invalid, or has no 'web:' key.
+    Server config is intentionally NOT in the same _load_config() path
+    that newmovies uses for runtime config — the webserver is a
+    separate entry point and shouldn't force newmovies to be importable.
+    """
+    cfg_file = Path(__file__).parent.parent.parent / "config.yaml"
+    if not cfg_file.exists():
+        return {}
+    try:
+        import yaml
+    except ImportError:
+        return {}
+    try:
+        with open(cfg_file, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+    web = data.get("web", {})
+    return web if isinstance(web, dict) else {}
 
 
 if __name__ == "__main__":
