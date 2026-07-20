@@ -108,18 +108,28 @@ function buildCard(c) {
   div.className = "card";
   div.id = "card-" + cssId(c.title);
   const reasons = (c.reasons || []).join(", ");
+  // Use data-attributes + event delegation instead of inline onclick.
+  // Inline onclick breaks when c.title contains apostrophes (e.g.
+  // "It's a Wonderful Life") because the JS string is delimited by '.
   div.innerHTML = `
     <h4>${escapeHtml(c.title)} <span class="year">(${c.year || "?"})</span></h4>
     <p class="meta">IMDb ${c.rating.toFixed(1)} · score ${c.score.toFixed(2)}</p>
     <p class="reasons">${escapeHtml(reasons)}</p>
     <p class="source">from: ${escapeHtml(c.source || "")}</p>
-    <div class="actions" id="actions-${cssId(c.title)}">
-      <button onclick="decide('${escapeAttr(c.title)}', 'accept', '${cssId(c.title)}')">Accept</button>
-      <button onclick="decide('${escapeAttr(c.title)}', 'refuse', '${cssId(c.title)}')">Refuse</button>
-      <button onclick="decide('${escapeAttr(c.title)}', 'blacklist', '${cssId(c.title)}')">Refuse + Blacklist</button>
+    <div class="actions" data-cid="${cssId(c.title)}">
+      <button data-decision="accept">Accept</button>
+      <button data-decision="refuse">Refuse</button>
+      <button data-decision="blacklist">Refuse + Blacklist</button>
     </div>
     <p class="decision" id="decision-${cssId(c.title)}"></p>
   `;
+  // Attach listeners after innerHTML is set (innerHTML wipes them).
+  const actions = div.querySelector(".actions");
+  actions.querySelectorAll("button").forEach(btn => {
+    btn.addEventListener("click", () => {
+      decide(c.title, btn.dataset.decision, cssId(c.title));
+    });
+  });
   return div;
 }
 
