@@ -235,23 +235,18 @@ def run_library(start_params: dict, state: RunState) -> bool:
     # Set args.library (the default mode flag) so newmovies.main()
     # actually runs the library flow. The CLI does this via argparse.
     # We do it manually here.
-    if not hasattr(newmovies.args, "auto") or not hasattr(newmovies.args, "saga"):
-        # No args object yet (CLI never ran) — use argparse to build a
-        # Namespace populated with every default. This way we get all
-        # fields argparse defines, including future ones we add.
-        # sys.argv[0] is the script name; we pass [] to use defaults.
-        newmovies.args = newmovies.parser.parse_args([])
-        # Force the bits the web runner needs:
-        newmovies.args.dry_run = True   # never actually add during run
-        newmovies.args.auto = False     # we want confirm path, candidates get captured
-        newmovies.args.yes = True       # skip --resetblacklist confirm
-        newmovies.args.web = False      # CRITICAL: don't recursively launch the server
-    else:
-        # args exists from a CLI invocation — just force the bits we need
-        newmovies.args.dry_run = True
-        newmovies.args.auto = False
-        newmovies.args.yes = True
-        newmovies.args.web = False      # CRITICAL: don't recursively launch the server
+    # V5.23: ALWAYS reset args to argparse defaults before each run.
+    # The previous code only reset on the first run (when args
+    # didn't have 'auto' or 'saga' attributes). After that, args
+    # was mutated in place: a mood from run 1 leaked into run 2
+    # even if the user only filled saga. Now we re-parse from []
+    # every time so the form fields are the only source of truth.
+    newmovies.args = newmovies.parser.parse_args([])
+    # Force the bits the web runner needs:
+    newmovies.args.dry_run = True   # never actually add during run
+    newmovies.args.auto = False     # we want confirm path, candidates get captured
+    newmovies.args.yes = True       # skip --resetblacklist confirm
+    newmovies.args.web = False      # CRITICAL: don't recursively launch the server
 
     # V5.6: forward the form params into newmovies.args so main()
     # dispatches to the right mode (mood/like/library). The start form
