@@ -1993,6 +1993,23 @@ def validate_candidate(raw_title, base, radarr_titles, radarr_tmdb, relaxed=Fals
         log(f"  Filtered out: {omdb['title']} (IMDb:{omdb['rating']} {omdb['year']})", "DEBUG")
         return None
 
+    # V5.24: cumulative filters from the advanced panel, mirroring
+    # the mood branch (V5.14). Without these, the --like mode
+    # silently ignores --imdb-min, --sd, --fd even though the user
+    # set them in the web UI. Now all artist-style modes behave
+    # consistently: imdb_min overrides the score floor, sd/fd are
+    # hard year filters, genre is already handled below.
+    if args.imdb_min is not None and omdb["rating"] > 0 and omdb["rating"] < args.imdb_min:
+        RUN_STATS["filtered_rating"] += 1
+        log(f'  Filtered (imdb-min {args.imdb_min}): {omdb["title"]} IMDb:{omdb["rating"]}', "DEBUG")
+        return None
+    if args.sd is not None and omdb["year"] and omdb["year"] < args.sd:
+        log(f'  Filtered (before sd={args.sd}): {omdb["title"]} ({omdb["year"]})', "DEBUG")
+        return None
+    if args.fd is not None and omdb["year"] and omdb["year"] > args.fd:
+        log(f'  Filtered (after fd={args.fd}): {omdb["title"]} ({omdb["year"]})', "DEBUG")
+        return None
+
     # Genre filter when --genre is active
     # Hard reject only if no adjacent genre match either
     # Otherwise apply a score penalty (handled in score_candidate)
