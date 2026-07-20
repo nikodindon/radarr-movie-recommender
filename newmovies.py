@@ -831,8 +831,11 @@ def score_candidate(base, candidate, relaxed=False):
     if no_signal:
         if not direct or len(direct) < 2:
             score -= 1.5
-    elif sem == 0.0:
-        reasons.append("plot_sim:unavailable")
+    # NOTE: we used to add 'plot_sim:unavailable' as a reason when sem==0.0
+    # (--no-embed mode). It's a valid diagnostic, but in practice it
+    # appeared on 90% of candidates and added visual noise to the
+    # [SELECT] line. The user already knows they disabled embeddings.
+    # Removed in V4.1.1; restore it under a --verbose flag if needed.
     score += candidate["rating"] / 3.0
     diff = abs(candidate["year"] - base["year"])
     score += 1.5 if diff < 5 else (0.8 if diff < 15 else 0)
@@ -2280,12 +2283,18 @@ def main():
     output = []
     for m in final:
         lk = m["lookup"]
+        # NOTE: we keep both the flat fields (used by add_to_radarr in mode 'a')
+        # AND the original `lookup` key (used by _build_add_payload in mode 'o'
+        # via the missing-candidate reconstruction). V4.1 centralised both prompts
+        # but the flat dict has no 'lookup' — preserving it here avoids a
+        # KeyError when the user picks 'o' on a library-mode run.
         output.append({
             "title":     lk["title"],    "year":      lk.get("year"),
             "rating":    m["rating"],    "score":     m["score"],
             "reasons":   m["reasons"],   "tmdbId":    lk["tmdbId"],
             "titleSlug": lk["titleSlug"],"images":    lk.get("images", []),
             "source":    m["source"],
+            "lookup":    lk,  # backward-compat for mode 'o' / _build_add_payload
         })
     json_file = f"reco_{today_str}.json"
     with open(json_file, "w", encoding="utf-8") as f:
