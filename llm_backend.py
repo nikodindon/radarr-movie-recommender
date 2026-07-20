@@ -1,17 +1,16 @@
 """
 llm_backend.py — Couche d'abstraction LLM pour newmovies.py
 
-Remplace les appels directs à Ollama (CLI `ollama run` + endpoint `/api/embeddings`)
-par un backend interchangeable. Deux backends fournis :
+Remplace les appels directs à Ollama (CLI `ollama run` + endpoint
+`/api/embeddings`) par un backend interchangeable. Un seul backend fourni
+depuis la Vague 2 (l'OllamaBackend legacy a été supprimé) :
 
-  - OllamaBackend    : l'implémentation d'origine (CLI subprocess). Conservée pour
-                       rétro-compatibilité si tu veux revenir à Ollama.
-  - LlamaCppBackend  : utilise l'API OpenAI-compat de llama-server (/v1/chat/completions
-                       et /v1/embeddings). C'est ce que tu utilises maintenant sur
-                       192.168.1.32:8080.
+  - LlamaCppBackend  : utilise l'API OpenAI-compat de llama-server
+                       (/v1/chat/completions et /v1/embeddings).
+                       C'est ce qu'on utilise sur 192.168.1.32:8080.
 
 Le choix se fait via config.yaml :
-    llm_backend: llamacpp   # ou "ollama" pour l'ancien mode
+    llm_backend: llamacpp
 
 ⚠️  Caveats llama.cpp connus (juillet 2026) :
    1. /v1/embeddings ne marche que si llama-server a été lancé avec --embeddings.
@@ -346,61 +345,6 @@ class LLMBackend(ABC):
 
 
 # =============================================================================
-# Backend Ollama (legacy, subprocess)
-# =============================================================================
-
-class OllamaBackend(LLMBackend):
-    name = "ollama"
-
-    def healthcheck(self) -> bool:
-        # Tente un ping "Reply OK" avec retry × 2 (warmup modèle).
-        for attempt in range(2):
-            try:
-                result = subprocess.run(
-                    ["ollama", "run", self.model],
-                    input="Reply with only the word OK.",
-                    text=True, capture_output=True,
-                    timeout=self._timeout_for("huge") if self.no_timeout else 120,
-                    encoding="utf-8", errors="replace")
-                if "OK" in result.stdout.upper():
-                    return True
-                if attempt == 0:
-                    time.sleep(5)
-            except subprocess.TimeoutExpired:
-                if attempt == 0:
-                    time.sleep(10)
-            except Exception:
-                if attempt == 0:
-                    time.sleep(5)
-        return False
-
-    def chat(self, prompt: str, kind: str = "chat", temperature: float = 0.2,
-             max_tokens: int = 1024) -> str:
-        import copy
-        env = copy.copy(os.environ)
-        env["TERM"] = "dumb"
-        env["NO_COLOR"] = "1"
-        result = subprocess.run(
-            ["ollama", "run", self.model],
-            input=prompt, text=True, capture_output=True,
-            timeout=self._timeout_for(kind),
-            encoding="utf-8", errors="replace", env=env)
-        # Strip ANSI
-        raw = re.sub(r'\u001b\[[0-9;?]*[a-zA-Z]', '', result.stdout)
-        raw = re.sub(r'\u001b\[[0-9;?]*[hlm]', '', raw)
-        return raw.strip()
-
-    def embed(self, text: str) -> Optional[list]:
-        url = os.environ.get("OLLAMA_EMBED_URL", "http://localhost:11434/api/embeddings")
-        try:
-            r = requests.post(url, json={"model": self.model, "prompt": text[:500]},
-                              timeout=self._timeout_for("embed"))
-            return r.json().get("embedding")
-        except Exception:
-            return None
-
-
-# =============================================================================
 # Backend llama.cpp (OpenAI-compat)
 # =============================================================================
 
@@ -508,16 +452,15 @@ class LlamaCppBackend(LLMBackend):
 
 def make_backend(cfg: dict) -> LLMBackend:
     """Construit le backend selon config.yaml.
-       cfg attendé : {"llm_backend": "llamacpp"|"ollama", ...}
+       cfg attendu : {"llm_backend": "llamacpp", ...}
+       Note: seul 'llamacpp' est supporté (OllamaBackend supprimé en Vague 2).
     """
-    kind = (cfg.get("llm_backend") or "ollama").lower()
+    kind = (cfg.get("llm_backend") or "llamacpp").lower()
     model = cfg.get("llm_model") or cfg.get("ollama_model", "llama3.1:8b")
     no_timeout = bool(cfg.get("no_timeout"))
 
     if kind == "llamacpp":
         base = cfg.get("llamacpp_base_url", "http://localhost:8080")
         return LlamaCppBackend(base_url=base, model=model, no_timeout=no_timeout)
-    elif kind == "ollama":
-        return OllamaBackend(model=model, no_timeout=no_timeout)
     else:
-        raise ValueError(f"Unknown llm_backend: {kind!r} (expected 'llamacpp' or 'ollama')")
+        raise ValueError(f"Unknown llm_backend: {kind!r} (only 'llamacpp' is supported)")

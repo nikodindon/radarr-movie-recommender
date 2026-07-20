@@ -126,6 +126,15 @@ parser.add_argument("--sources",       type=int,   default=10)
 parser.add_argument("--suggestions",   type=int,   default=14)
 parser.add_argument("--top",           type=int,   default=10)
 parser.add_argument("--auto",          action="store_true")
+parser.add_argument("--dry-run",       action="store_true",
+    help="Compute recommendations but DO NOT call Radarr's POST /movie. "
+         "Logs each film that would be added with a [DRY-RUN] tag.")
+parser.add_argument("--limit",         type=int,   default=0,
+    help="Hard cap on the number of films added per run (0 = no cap). "
+         "Combined with --auto, prevents runaway adds. Applies AFTER --top.")
+parser.add_argument("--yes",           action="store_true",
+    help="Skip interactive confirmations (e.g. --resetblacklist). "
+         "Use in CI/cron contexts.")
 parser.add_argument("--no-embed",      action="store_true")
 parser.add_argument("--debug",         action="store_true")
 parser.add_argument("--genre",         type=str,   default=None,
@@ -296,6 +305,18 @@ BLACKLIST = load_blacklist()
 # Handle --resetblacklist immediately at startup
 if hasattr(args, "resetblacklist") and args.resetblacklist:
     count = len(BLACKLIST)
+    if not getattr(args, "yes", False):
+        cprint(f"  About to wipe {count} titles from {BLACKLIST_FILE}.", "yellow", bold=True)
+        cprint("  This cannot be undone (the blacklist will re-fill from your "
+               "Radarr library on the next run, but any manual additions will be lost).",
+               "yellow")
+        try:
+            ans = input("  Type 'yes' to confirm, anything else to abort: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            ans = ""
+        if ans != "yes":
+            cprint("  Aborted. Blacklist untouched.", "gray")
+            exit(0)
     BLACKLIST.clear()
     save_blacklist(BLACKLIST)
     cprint(f"  Blacklist reset: {count} titles removed.", "yellow", bold=True)
@@ -522,6 +543,19 @@ def get_radarr_lookup(title, year=None):
     return result
 
 def add_to_radarr(movie):
+    # --limit is enforced here (single chokepoint) before either the dry-run
+    # short-circuit or the real Radarr POST. This way, every code path that
+    # counts an "add" goes through the same gate.
+    if getattr(args, "limit", 0) > 0 and RUN_STATS["added"] >= args.limit:
+        log(f"[LIMIT] {args.limit} film(s) already added this run, "
+            f"skipping {movie['title']}", "WARNING")
+        return False
+    # Dry-run short-circuits BEFORE any network call. The function still
+    # returns True so the calling code path (counter increment, blacklist
+    # update) is preserved, but Radarr is not mutated.
+    if getattr(args, "dry_run", False):
+        log(f"[DRY-RUN] Would add: {movie['title']} ({movie['year']})", "WARNING")
+        return True
     payload = {
         "title":               movie["title"],
         "qualityProfileId":    QUALITY_PROFILE_ID,
