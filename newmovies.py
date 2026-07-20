@@ -640,6 +640,89 @@ def add_to_radarr(movie):
         return False
 
 # =========================
+# CONFIRM AND ADD (centralised, Vague 4)
+# =========================
+def _build_add_payload(m: dict) -> dict:
+    """Construit le payload Radarr à partir d'un candidate. Utilisé par
+       le mode 'o' (one-by-one) où on n'a pas accès à output[]."""
+    lk = m["lookup"]
+    return {
+        "title":     lk["title"],
+        "year":      lk.get("year"),
+        "rating":    m["rating"],
+        "score":     m["score"],
+        "reasons":   m["reasons"],
+        "tmdbId":    lk["tmdbId"],
+        "titleSlug": lk["titleSlug"],
+        "images":    lk.get("images", []),
+        "source":    m.get("source", ""),
+    }
+
+def _print_one_synopsis(m: dict) -> None:
+    """Affiche le synopsis d'un candidate (utilisé par mode 'o' avec --synopsis).
+       Stratégie : 1) plot dans m, 2) cache OMDb par titre+année, 3) cache sans
+       année, 4) fetch OMDb live. Évite l'appel réseau si déjà cached."""
+    plot = m.get("plot", "")
+    if not plot:
+        cached = OMDB_CACHE.get(f"{m['title']}|{m.get('year','')}")
+        if not cached:
+            cached = OMDB_CACHE.get(f"{m['title']}|")
+        if isinstance(cached, dict):
+            plot = cached.get("plot", "")
+    if not plot:
+        omdb = get_omdb_full(m["title"])
+        plot = omdb.get("plot", "") if omdb else ""
+    _print_synopsis(m["title"], plot)
+
+def _add_one_with_prompt(m: dict) -> bool:
+    """Prompt y/n pour un candidate. Retourne True si ajouté.
+       Gère aussi le prompt 'Blacklist X?' si refusé."""
+    show_syn = getattr(args, "synopsis", False)
+    cprint(f"  + {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}", "cyan")
+    if show_syn:
+        _print_one_synopsis(m)
+    rep = input("  add? (y/n): ").lower().strip()
+    if rep == "y":
+        payload = _build_add_payload(m)
+        return add_to_radarr(payload)
+    bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
+    if bl_rep == "y":
+        BLACKLIST.add(m["title"])
+    return False
+
+def confirm_and_add(output: list, missing: list = None, label: str = "") -> list:
+    """Demande à l'utilisateur comment procéder ('a'=all, 'o'=one-by-one, 'n'=no)
+       et applique le choix. Centralise le pattern dupliqué dans 7 modes
+       (saga, filmography, watchlist, analyze, mood, like, default).
+       Renvoie la liste des titres effectivement ajoutés."""
+    if not output:
+        return []
+    cprint(f"\n  Add to Radarr? ({len(output)} candidates){f' -- {label}' if label else ''}",
+           "white", bold=True)
+    try:
+        choice = input("  (a=all / o=one by one / n=no): ").lower().strip()
+    except (EOFError, KeyboardInterrupt):
+        choice = "n"
+    added = []
+    if choice == "a":
+        for m in output:
+            if add_to_radarr(m):
+                added.append(m["title"])
+                RUN_STATS["added"] += 1
+                BLACKLIST.add(m["title"])
+    elif choice == "o":
+        # Si 'missing' est fourni, on itère dessus (variante saga/filmography)
+        # sinon sur output directement (variante mood/default).
+        iterable = missing if missing is not None else output
+        for m in iterable:
+            if _add_one_with_prompt(m):
+                added.append(m["title"])
+                RUN_STATS["added"] += 1
+                BLACKLIST.add(m["title"])
+    # 'n' ou autre: rien à faire
+    return added
+
+# =========================
 # EMBEDDINGS
 # =========================
 def get_embedding(text):
@@ -984,37 +1067,9 @@ def run_saga_mode(radarr_titles: set, radarr_tmdb: set):
             cprint(f"  {i:2d}.  {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}  [{m['source']}]", "cyan")
         print()
         cprint("Add to Radarr?", "white", bold=True)
-        choice = input("  (a=all / o=one by one / n=no): ").lower().strip()
-        if choice == "a":
-            for m in output:
-                if add_to_radarr(m):
-                    added.append(m["title"])
-                    RUN_STATS["added"] += 1
-                    BLACKLIST.add(m["title"])
-        elif choice == "o":
-            show_syn = getattr(args, "synopsis", False)
-            for m in all_missing:
-                cprint(f"  + {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}", "cyan")
-                if show_syn:
-                    _print_synopsis(m["title"], m.get("plot", ""))
-                rep = input("  add? (y/n): ").lower().strip()
-                if rep == "y":
-                    lk = m["lookup"]
-                    movie_payload = {
-                        "title": lk["title"], "year": lk.get("year"),
-                        "rating": m["rating"], "score": m["score"],
-                        "reasons": m["reasons"], "tmdbId": lk["tmdbId"],
-                        "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
-                        "source": m["source"],
-                    }
-                    if add_to_radarr(movie_payload):
-                        added.append(m["title"])
-                        RUN_STATS["added"] += 1
-                        BLACKLIST.add(m["title"])
-                else:
-                    bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
-                    if bl_rep == "y":
-                        BLACKLIST.add(m["title"])
+        # Vague 4: replaced ~30 lines of duplicated prompt logic with the
+        # centralised confirm_and_add() helper.
+        added = confirm_and_add(output, missing=all_missing, label="saga")
     if added:
         cprint(f"\n  {len(added)} film(s) added to Radarr!", "green", bold=True)
 
@@ -1211,37 +1266,8 @@ def run_artist_mode(person: str, role: str, radarr_titles: set, radarr_tmdb: set
                 BLACKLIST.add(m["title"])
     else:
         cprint("Add to Radarr?", "white", bold=True)
-        choice = input("  (a=all / o=one by one / n=no): ").lower().strip()
-        if choice == "a":
-            for m in output:
-                if add_to_radarr(m):
-                    added.append(m["title"])
-                    RUN_STATS["added"] += 1
-                    BLACKLIST.add(m["title"])
-        elif choice == "o":
-            show_syn = getattr(args, "synopsis", False)
-            for m in missing:
-                cprint(f"  + {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}", "cyan")
-                if show_syn:
-                    _print_synopsis(m["title"], m.get("plot", ""))
-                rep = input("  add? (y/n): ").lower().strip()
-                if rep == "y":
-                    lk = m["lookup"]
-                    payload = {
-                        "title": lk["title"], "year": lk.get("year"),
-                        "rating": m["rating"], "score": m["score"],
-                        "reasons": m["reasons"], "tmdbId": lk["tmdbId"],
-                        "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
-                        "source": m["source"],
-                    }
-                    if add_to_radarr(payload):
-                        added.append(m["title"])
-                        RUN_STATS["added"] += 1
-                        BLACKLIST.add(m["title"])
-                else:
-                    bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
-                    if bl_rep == "y":
-                        BLACKLIST.add(m["title"])
+        # Vague 4: replaced ~30 lines of duplicated prompt logic.
+        added = confirm_and_add(output, missing=missing)
         cprint(f"\n  {len(added)} film(s) added to Radarr!", "green", bold=True)
 
     save_blacklist(BLACKLIST)
@@ -1451,35 +1477,8 @@ def run_watchlist(filepath: str, radarr_titles: set, radarr_tmdb: set):
                 BLACKLIST.add(m["title"])
     else:
         cprint("Add to Radarr?", "white", bold=True)
-        choice = input("  (a=all / o=one by one / n=no): ").lower().strip()
-        if choice == "a":
-            for m in output:
-                if add_to_radarr(m):
-                    added.append(m["title"])
-                    RUN_STATS["added"] += 1
-                    BLACKLIST.add(m["title"])
-        elif choice == "o":
-            for m in missing:
-                rep = input(
-                    f"  + {m['title']} ({m['year']}) IMDb:{m['rating']:.1f}  add? (y/n): "
-                ).lower()
-                if rep == "y":
-                    lk = m["lookup"]
-                    payload = {
-                        "title": lk["title"], "year": lk.get("year"),
-                        "rating": m["rating"], "score": m["score"],
-                        "reasons": m["reasons"], "tmdbId": lk["tmdbId"],
-                        "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
-                        "source": m["source"],
-                    }
-                    if add_to_radarr(payload):
-                        added.append(m["title"])
-                        RUN_STATS["added"] += 1
-                        BLACKLIST.add(m["title"])
-                else:
-                    bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
-                    if bl_rep == "y":
-                        BLACKLIST.add(m["title"])
+        # Vague 4: replaced ~30 lines of duplicated prompt logic.
+        added = confirm_and_add(output, missing=missing)
 
     if added:
         cprint(f"\n  {len(added)} film(s) added to Radarr!", "green", bold=True)
@@ -1648,37 +1647,8 @@ def run_analyze(radarr: list, radarr_titles: set, radarr_tmdb: set):
                 BLACKLIST.add(m["title"])
     else:
         cprint("Add to Radarr?", "white", bold=True)
-        choice = input("  (a=all / o=one by one / n=no): ").lower().strip()
-        if choice == "a":
-            for m in output:
-                if add_to_radarr(m):
-                    added.append(m["title"])
-                    RUN_STATS["added"] += 1
-                    BLACKLIST.add(m["title"])
-        elif choice == "o":
-            show_syn = getattr(args, "synopsis", False)
-            for m in missing:
-                cprint(f"  + {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}", "cyan")
-                if show_syn:
-                    _print_synopsis(m["title"], m.get("plot", ""))
-                rep = input("  add? (y/n): ").lower().strip()
-                if rep == "y":
-                    lk = m["lookup"]
-                    payload = {
-                        "title": lk["title"], "year": lk.get("year"),
-                        "rating": m["rating"], "score": m["score"],
-                        "reasons": m["reasons"], "tmdbId": lk["tmdbId"],
-                        "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
-                        "source": m["source"],
-                    }
-                    if add_to_radarr(payload):
-                        added.append(m["title"])
-                        RUN_STATS["added"] += 1
-                        BLACKLIST.add(m["title"])
-                else:
-                    bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
-                    if bl_rep == "y":
-                        BLACKLIST.add(m["title"])
+        # Vague 4: replaced ~30 lines of duplicated prompt logic.
+        added = confirm_and_add(output, missing=missing)
     if added:
         cprint(f"\n  {len(added)} film(s) added to Radarr!", "green", bold=True)
 
@@ -2174,29 +2144,8 @@ def main():
         else:
             print_report(final_mood, added=[])
             cprint("\nAdd to Radarr?", "white", bold=True)
-            choice = input("  (a=all / o=one by one / n=no): ").lower().strip()
-            if choice == "a":
-                for m in output:
-                    if add_to_radarr(m):
-                        added.append(m["title"])
-                        RUN_STATS["added"] += 1
-                        BLACKLIST.add(m["title"])
-            elif choice == "o":
-                show_syn = getattr(args, "synopsis", False)
-                for m in output:
-                    cprint(f"  + {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}", "cyan")
-                    if show_syn:
-                        _print_synopsis(m["title"], m.get("plot", ""))
-                    rep = input("  add? (y/n): ").lower().strip()
-                    if rep == "y":
-                        if add_to_radarr(m):
-                            added.append(m["title"])
-                            RUN_STATS["added"] += 1
-                            BLACKLIST.add(m["title"])
-                    else:
-                        bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
-                        if bl_rep == "y":
-                            BLACKLIST.add(m["title"])
+            # Vague 4: replaced ~25 lines of duplicated prompt logic.
+            added = confirm_and_add(output, label="mood")
         if args.auto or added:
             print_report(final_mood, added)
         save_blacklist(BLACKLIST)
@@ -2255,29 +2204,8 @@ def main():
         else:
             print_report(final_like, added=[])
             cprint("\nAdd to Radarr?", "white", bold=True)
-            choice = input("  (a=all / o=one by one / n=no): ").lower().strip()
-            if choice == "a":
-                for m in output:
-                    if add_to_radarr(m):
-                        added.append(m["title"])
-                        RUN_STATS["added"] += 1
-                        BLACKLIST.add(m["title"])
-            elif choice == "o":
-                show_syn = getattr(args, "synopsis", False)
-                for m in output:
-                    cprint(f"  + {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}", "cyan")
-                    if show_syn:
-                        _print_synopsis(m["title"], m.get("plot", ""))
-                    rep = input("  add? (y/n): ").lower().strip()
-                    if rep == "y":
-                        if add_to_radarr(m):
-                            added.append(m["title"])
-                            RUN_STATS["added"] += 1
-                            BLACKLIST.add(m["title"])
-                    else:
-                        bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
-                        if bl_rep == "y":
-                            BLACKLIST.add(m["title"])
+            # Vague 4: replaced ~25 lines of duplicated prompt logic.
+            added = confirm_and_add(output, label="like")
         if args.auto or added:
             print_report(final_like, added)
         save_blacklist(BLACKLIST)
@@ -2379,38 +2307,8 @@ def main():
     else:
         print_report(final, added=[])
         cprint("\nAdd to Radarr?", "white", bold=True)
-        choice = input("  (a=all / o=one by one / n=no): ").lower().strip()
-        if choice == "a":
-            for m in output:
-                if add_to_radarr(m):
-                    added.append(m["title"])
-                    RUN_STATS["added"] += 1
-                    BLACKLIST.add(m["title"])
-        elif choice == "o":
-            show_syn = getattr(args, "synopsis", False)
-            for m in output:
-                cprint(f"  + {m['title']} ({m['year']})  IMDb:{m['rating']:.1f}", "cyan")
-                if show_syn:
-                    # Try cache with year first, then without
-                    cached = OMDB_CACHE.get(f"{m['title']}|{m.get('year','')}")
-                    if not cached:
-                        cached = OMDB_CACHE.get(f"{m['title']}|")
-                    plot = cached.get("plot", "") if isinstance(cached, dict) else ""
-                    if not plot:
-                        # Fetch from OMDb if not cached
-                        omdb = get_omdb_full(m["title"])
-                        plot = omdb.get("plot", "") if omdb else ""
-                    _print_synopsis(m["title"], plot)
-                rep = input("  add? (y/n): ").lower().strip()
-                if rep == "y":
-                    if add_to_radarr(m):
-                        added.append(m["title"])
-                        RUN_STATS["added"] += 1
-                        BLACKLIST.add(m["title"])
-                else:
-                    bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
-                    if bl_rep == "y":
-                        BLACKLIST.add(m["title"])
+        # Vague 4: replaced ~30 lines of duplicated prompt logic.
+        added = confirm_and_add(output, label="library")
     if args.auto or added:
         print_report(final, added)
     save_blacklist(BLACKLIST)
