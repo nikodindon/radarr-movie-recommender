@@ -2106,17 +2106,25 @@ def main():
             )
         ]
         if not filtered_pool:
-            log(f"No films found in your library for genre: {args.genre}", "WARNING")
-            log("Available genres in your library:", "INFO")
-            all_genres = sorted({
+            # V5.17: if no films in the library match the genre, fall
+            # back to mood mode. The user clearly wants films of that
+            # genre, so the LLM will suggest them. We rebuild args
+            # so the mood branch below sees the right state.
+            available = sorted({
                 g for m in pool
                 for g in m.get("genres", [])
                 if g
             })
-            cprint(f"  {', '.join(all_genres)}", "cyan")
-            return
-        log(f"Genre filter '{args.genre}': {len(filtered_pool)} matching films in library", "INFO")
-        pool = filtered_pool
+            log(f"No films found in your library for genre: {args.genre}", "WARNING")
+            log(f"Available genres in your library: {', '.join(available)}", "INFO")
+            log(f"Falling back to mood mode with prompt: 'best {args.genre} films'", "INFO")
+            args.mood = f"best {args.genre} films"
+            # Don't return — let the mood branch handle it.
+            # The pool remains empty but that's OK: the mood branch
+            # doesn't use it.
+        else:
+            log(f"Genre filter '{args.genre}': {len(filtered_pool)} matching films in library", "INFO")
+            pool = filtered_pool
 
     # ── --stats mode ─────────────────────────────────────────────────────
     if args.stats:
