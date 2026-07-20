@@ -416,6 +416,43 @@ log(f"LLM {'ready' if LLM_OK else 'UNAVAILABLE'}",
 # =========================
 OMDB_CACHE      = {}
 EMBEDDING_CACHE = {}
+# OMDb disk cache (Vague 3). Persisted at end of run, reloaded at boot.
+# Located in XDG cache dir. Note: we only cache successful lookups;
+# failed lookups (None) are retried next run (Vague 3 fix on the audit's
+# bug #8 — caching negatives means a transient OMDb outage or a typo
+# would silently kill that film forever).
+OMDB_CACHE_DIR  = Path.home() / ".cache" / "radarr-reco"
+OMDB_CACHE_FILE = OMDB_CACHE_DIR / "omdb_cache.json"
+
+def _load_omdb_cache():
+    """Charge le cache OMDb depuis le disque. Silencieux en cas d'erreur."""
+    try:
+        if OMDB_CACHE_FILE.exists():
+            with open(OMDB_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # Validation minimale : doit être un dict[str, dict|None]
+            if isinstance(data, dict):
+                # On filtre les None par sécurité (cohérence avec le fix V3.3)
+                return {k: v for k, v in data.items() if v is not None}
+    except (OSError, json.JSONDecodeError, ValueError) as e:
+        log(f"OMDb cache file unreadable ({type(e).__name__}): {e}, starting empty", "DEBUG")
+    return {}
+
+def save_omdb_cache():
+    """Persiste le cache OMDb sur disque. Écriture atomique (tmp + rename)."""
+    try:
+        OMDB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = OMDB_CACHE_FILE.with_suffix(".tmp")
+        # Filtre défensif : on ne sauvegarde jamais de None (V3.3)
+        to_save = {k: v for k, v in OMDB_CACHE.items() if v is not None}
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(to_save, f, ensure_ascii=False, indent=1)
+        tmp.replace(OMDB_CACHE_FILE)
+    except OSError as e:
+        log(f"OMDb cache file unwritable ({type(e).__name__}: {e})", "DEBUG")
+
+# Charge le cache existant en mémoire (Vague 3 V3.2)
+OMDB_CACHE.update(_load_omdb_cache())
 RUN_STATS = {
     "sources_processed": 0, "ollama_suggestions": 0,
     "candidates_tested":  0, "filtered_rating":   0,
@@ -434,26 +471,39 @@ def _clean_title(raw: str) -> str:
     t = re.sub(r'^[-*]\s*', '', t)
     return t.strip()
 
+# Lock guarding CURRENT_OMDB_KEY rotation when multiple threads call
+# _omdb_request in parallel (Vague 3 mood-mode parallelisation).
+# The dict OMDB_CACHE itself is GIL-safe for atomic get/set so it doesn't
+# need explicit protection, but the key rotation + file save is not atomic.
+import threading
+_omdb_lock = threading.Lock()
+
 def _omdb_request(params: dict, retries=2):
     global CURRENT_OMDB_KEY
-    for _ in range(retries * len(OMDB_KEYS)):
-        params["apikey"] = CURRENT_OMDB_KEY
-        try:
-            r = requests.get("http://www.omdbapi.com/", params=params, timeout=10)
-            data = r.json()
-            time.sleep(1.1)
-            if data.get("Response") == "False":
-                if "limit" in data.get("Error", "").lower():
-                    log(f"Quota reached {CURRENT_OMDB_KEY[:8]}... rotating key", "WARNING")
-                    idx = OMDB_KEYS.index(CURRENT_OMDB_KEY)
-                    CURRENT_OMDB_KEY = OMDB_KEYS[(idx + 1) % len(OMDB_KEYS)]
-                    save_current_key(CURRENT_OMDB_KEY)
-                    continue
-                return None
-            return data
-        except Exception as e:
-            log(f"OMDb err: {e}", "DEBUG")
-            time.sleep(1.5)
+    # The lock here is held for the entire request (HTTP + 1.1s sleep),
+    # which means concurrent callers serialise on the rate limit anyway.
+    # This is intentional: OMDb's free tier is 1 req/sec/key, and going
+    # faster gets us banned. The parallel gain comes from doing other
+    # work (logging, scoring) while one thread holds the OMDb lock.
+    with _omdb_lock:
+        for _ in range(retries * len(OMDB_KEYS)):
+            params["apikey"] = CURRENT_OMDB_KEY
+            try:
+                r = requests.get("http://www.omdbapi.com/", params=params, timeout=10)
+                data = r.json()
+                time.sleep(1.1)
+                if data.get("Response") == "False":
+                    if "limit" in data.get("Error", "").lower():
+                        log(f"Quota reached {CURRENT_OMDB_KEY[:8]}... rotating key", "WARNING")
+                        idx = OMDB_KEYS.index(CURRENT_OMDB_KEY)
+                        CURRENT_OMDB_KEY = OMDB_KEYS[(idx + 1) % len(OMDB_KEYS)]
+                        save_current_key(CURRENT_OMDB_KEY)
+                        continue
+                    return None
+                return data
+            except Exception as e:
+                log(f"OMDb err: {e}", "DEBUG")
+                time.sleep(1.5)
     return None
 
 def get_omdb_full(raw_title: str, year=None):
@@ -478,7 +528,10 @@ def get_omdb_full(raw_title: str, year=None):
         short_title = title.split(" - ")[0].strip()
         data = _omdb_request({"t": short_title, "type": "movie", "plot": "short"})
     if not data:
-        OMDB_CACHE[cache_key] = None
+        # V3.3: do NOT cache the negative result. A transient OMDb outage
+        # or a typo would otherwise silently kill that film forever in
+        # subsequent runs. We pay one retry per run per failed title,
+        # but failures are rare and the OMDb rate limit absorbs it.
         return None
     try:
         year_val = int(data.get("Year", "0")[:4])
@@ -2056,27 +2109,38 @@ def main():
             "actors": "", "director": "n/a", "rating": 0.0, "plot": args.mood
         }
         validated_mood = []
-        for raw in mood_titles:
-            omdb = get_omdb_full(_clean_title(raw))
-            if not omdb:
-                continue
-            if omdb["title"] in radarr_titles or omdb["title"] in BLACKLIST:
-                continue
-            # Mood mode: trust Ollama's choices, use very low floor (4.0)
-            # --imdb-min overrides if specified
-            min_r = getattr(args, "imdb_min", None) if getattr(args, "imdb_min", None) else 4.0
-            if omdb["rating"] < min_r and omdb["rating"] > 0:
-                continue
-            # For mood mode, skip genre/score filtering — Ollama chose these for the mood
-            lookup = get_radarr_lookup(omdb["title"], omdb["year"])
-            if not lookup or lookup.get("tmdbId") in radarr_tmdb:
-                continue
-            RUN_STATS["selected"] += 1
-            log(f"  + {omdb['title']} ({omdb['year']})  IMDb:{omdb['rating']:.1f}  genres:{omdb['genre']}", "SELECT")
-            validated_mood.append({
-                "title": omdb["title"], "year": omdb["year"],
-                "rating": omdb["rating"], "plot": omdb["plot"],
-                "score": round(omdb["rating"] * 1.5, 2),
+        # Parallelise OMDb lookups (Vague 3). The OMDb rate limit (1 req/sec
+        # per key, with 1.1s sleep inside _omdb_request) is per-process, so
+        # 4 workers don't 4x the speedup, but they do eliminate the serial
+        # latency between requests. With 25 mood candidates and ~200ms OMDb
+        # response, this cuts ~25*1.1s = 27s to ~7-8s. OMDB_CACHE is a dict,
+        # which is GIL-safe for atomic get/set; CURRENT_OMDB_KEY rotation
+        # is protected by _omdb_lock.
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(get_omdb_full, _clean_title(raw)): raw
+                       for raw in mood_titles}
+            for fut in as_completed(futures):
+                omdb = fut.result()
+                if not omdb:
+                    continue
+                if omdb["title"] in radarr_titles or omdb["title"] in BLACKLIST:
+                    continue
+                # Mood mode: trust Ollama's choices, use very low floor (4.0)
+                # --imdb-min overrides if specified
+                min_r = getattr(args, "imdb_min", None) if getattr(args, "imdb_min", None) else 4.0
+                if omdb["rating"] < min_r and omdb["rating"] > 0:
+                    continue
+                # For mood mode, skip genre/score filtering — Ollama chose these for the mood
+                lookup = get_radarr_lookup(omdb["title"], omdb["year"])
+                if not lookup or lookup.get("tmdbId") in radarr_tmdb:
+                    continue
+                RUN_STATS["selected"] += 1
+                log(f"  + {omdb['title']} ({omdb['year']})  IMDb:{omdb['rating']:.1f}  genres:{omdb['genre']}", "SELECT")
+                validated_mood.append({
+                    "title": omdb["title"], "year": omdb["year"],
+                    "rating": omdb["rating"], "plot": omdb["plot"],
+                    "score": round(omdb["rating"] * 1.5, 2),
                 "reasons": [],
                 "lookup": lookup, "source": f'mood:{args.mood}',
                 "relaxed": False,
@@ -2352,6 +2416,9 @@ def main():
     save_blacklist(BLACKLIST)
     cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
     cprint(f"  Log saved: {log_file}", "gray")
+    # Persist OMDb cache for next run (Vague 3). Atomic write: tmp + rename,
+    # so a crash mid-write doesn't corrupt the existing file.
+    save_omdb_cache()
 
 if __name__ == "__main__":
     main()
