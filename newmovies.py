@@ -757,7 +757,7 @@ def ollama_detect_sagas(radarr_titles: list) -> dict:
     """Ask the LLM backend to identify which films belong to sagas and group them."""
     if not OLLAMA_OK or LLM is None:
         return {}
-    cprint("  [{LLM.name}] Detecting incomplete sagas in your library...".format(LLM_name=LLM.name), "magenta")
+    cprint(f"  [{LLM.name}] Detecting incomplete sagas in your library...", "magenta")
     try:
         sagas = LLM.detect_sagas(radarr_titles)
         cprint(f'  [{LLM.name}] {len(sagas)} saga(s) detected', "magenta")
@@ -1458,7 +1458,7 @@ def ollama_analyze_collection(profile: dict) -> tuple:
     """Ask the LLM backend to analyze the collection and suggest directions."""
     if not OLLAMA_OK or LLM is None:
         return "", []
-    cprint("  [{LLM.name}] Analyzing your collection...".format(LLM_name=LLM.name), "magenta")
+    cprint(f"  [{LLM.name}] Analyzing your collection...", "magenta")
     try:
         return LLM.analyze_collection(profile)
     except Exception as e:
