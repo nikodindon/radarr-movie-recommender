@@ -148,6 +148,9 @@ parser.add_argument("--resetblacklist", action="store_true",
 parser.add_argument("--web", action="store_true",
     help="Launch the web UI (FastAPI server on 127.0.0.1:8080) instead "
          "of running a recommendation in the terminal. Vague 5.")
+parser.add_argument("--web-port", type=int, default=None,
+    help="Port for --web (default: env RADARR_RECO_WEB_PORT or 8080). "
+         "Useful when 8080 is taken (e.g. by llama-server).")
 parser.add_argument("--saga",          type=str,   default=None, nargs="?", const="__auto__",
     help="Complete saga films. Use alone for auto-detection or specify a saga name")
 parser.add_argument("--director",      type=str,   default=None,
@@ -2001,6 +2004,11 @@ def main():
     # the web runner (in a thread), not from --web.
     if getattr(args, "web", False):
         from radarr_reco.web.server import main as web_main
+        # Pass the port through env so web server.main() picks it up.
+        # Priority: --web-port flag > RADARR_RECO_WEB_PORT env > 8080 default.
+        if getattr(args, "web_port", None) is not None:
+            import os as _os
+            _os.environ["RADARR_RECO_WEB_PORT"] = str(args.web_port)
         web_main()
         # web_main() blocks (uvicorn.run). We never reach here unless
         # the server is killed.
