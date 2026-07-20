@@ -280,8 +280,8 @@ def load_blacklist():
         try:
             with open(BLACKLIST_FILE, "r", encoding="utf-8") as f:
                 return set(json.load(f))
-        except:
-            pass
+        except (OSError, json.JSONDecodeError, ValueError) as e:
+            log(f"Blacklist file unreadable ({type(e).__name__}: {e}), starting empty", "WARNING")
     return set()
 
 def save_blacklist(bl):
@@ -312,22 +312,23 @@ def load_current_key():
                 k = f.read().strip()
                 if k in OMDB_KEYS:
                     return k
-        except:
-            pass
+        except (OSError, ValueError) as e:
+            log(f"OMDb config file unreadable ({type(e).__name__}: {e})", "DEBUG")
     return OMDB_KEYS[0]
 
 def save_current_key(key):
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             f.write(key)
-    except:
-        pass
+    except OSError as e:
+        log(f"OMDb config file unwritable ({type(e).__name__}: {e})", "DEBUG")
 
 def test_omdb_key(key):
     try:
         r = requests.get(f"http://www.omdbapi.com/?t=Inception&apikey={key}", timeout=8)
         return r.json().get("Response") == "True"
-    except:
+    except (requests.RequestException, ValueError) as e:
+        log(f"OMDb test failed for key ...{key[-4:]}: {type(e).__name__}: {e}", "DEBUG")
         return False
 
 CURRENT_OMDB_KEY = load_current_key()
@@ -460,11 +461,11 @@ def get_omdb_full(raw_title: str, year=None):
         return None
     try:
         year_val = int(data.get("Year", "0")[:4])
-    except:
+    except (ValueError, TypeError):
         year_val = 0
     try:
         rating = float(data.get("imdbRating", "0"))
-    except:
+    except (ValueError, TypeError):
         rating = 0.0
     result = {
         "title":    data.get("Title", title),
@@ -512,7 +513,8 @@ def get_radarr_lookup(title, year=None):
                 if item.get("title", "").lower().strip() == tl:
                     return item
             return data[0]
-        except:
+        except (requests.RequestException, ValueError, KeyError, TypeError) as e:
+            log(f"OMDb search lookup failed for {title!r}: {type(e).__name__}: {e}", "DEBUG")
             return None
     result = _lookup(f"{title} {year}" if year else title)
     if (not result or not result.get("tmdbId")) and year:
@@ -650,11 +652,17 @@ def score_candidate(base, candidate, relaxed=False):
         reasons.append(f"plot_sim:{sem:.2f}")
     if not relaxed and sem < 0.4 and not direct and not shared:
         score -= 2.0
-    # Extra penalty if plot_sim is very low and no director/actor signal
-    # This avoids off-topic results like Ice Age from Independence Day
-    if sem < 0.55 and not shared and bd == "n/a" or sem == 0.0:
+    # Extra penalty if plot_sim is very low AND we have no director/actor
+    # signal. This avoids off-topic results like Ice Age from Independence Day.
+    # Note: we used to OR `sem == 0.0` here, which double-penalised candidates
+    # when embeddings were unavailable (--no-embed or llama-server without
+    # --embeddings). Now the no-embedding case is a neutral flag, not a penalty.
+    no_signal = (sem < 0.55 and not shared and bd == "n/a")
+    if no_signal:
         if not direct or len(direct) < 2:
             score -= 1.5
+    elif sem == 0.0:
+        reasons.append("plot_sim:unavailable")
     score += candidate["rating"] / 3.0
     diff = abs(candidate["year"] - base["year"])
     score += 1.5 if diff < 5 else (0.8 if diff < 15 else 0)
@@ -663,32 +671,8 @@ def score_candidate(base, candidate, relaxed=False):
 # =========================
 # OLLAMA SUGGESTIONS
 # =========================
-def _parse_ollama_titles(raw: str) -> list:
-    m = re.search(r'\{[^{}]*"films"\s*:\s*\[([^\]]+)\][^{}]*\}', raw, re.DOTALL)
-    if m:
-        try:
-            return [t.strip() for t in json.loads(m.group(0)).get("films", []) if t.strip()]
-        except:
-            pass
-    m = re.search(r'"films"\s*:\s*\[([^\]]+)\]', raw, re.DOTALL)
-    if m:
-        try:
-            return [t.strip() for t in json.loads("[" + m.group(1) + "]") if t.strip()]
-        except:
-            pass
-    items = re.findall(r'"([^"]{3,80})"', raw)
-    bl = {"films","titles","suggestions","recommendations","similar","movies","title","film"}
-    cleaned = [i for i in items if i.lower() not in bl]
-    if len(cleaned) >= 3:
-        return cleaned
-    titles = []
-    for line in raw.split("\n"):
-        m2 = re.match(r'^(?:\d+[\.\)]|[-*])\s*(.+)$', line.strip())
-        if m2:
-            t = re.sub(r'\s*\(\d{4}\)\s*$', '', m2.group(1).strip().strip('"\''))
-            if 2 < len(t) < 100:
-                titles.append(t)
-    return titles
+# Note: _parse_ollama_titles was deleted (was dead code, duplicated by
+# llm_backend.parse_film_titles which all 7 generation helpers now use).
 
 def ollama_suggest_titles(base: dict) -> list:
     if not OLLAMA_OK or LLM is None:
@@ -1648,36 +1632,6 @@ def _print_synopsis(title: str, plot: str = ""):
     for l in lines:
         cprint(l, "gray")
 
-def _ask_one_by_one(missing: list, output: list, label: str = "") -> list:
-    """Generic one-by-one confirmation with optional synopsis."""
-    added = []
-    show_synopsis = getattr(args, "synopsis", False)
-    for m in missing:
-        title_str = f"{m['title']} ({m['year']})  IMDb:{m['rating']:.1f}"
-        if label:
-            title_str += f"  [{label}]"
-        cprint(f"  + {title_str}", "cyan")
-        if show_synopsis:
-            # Try to get plot from omdb cache or m dict
-            plot = m.get("plot", "") or OMDB_CACHE.get(f"{m['title']}|", {})
-            if isinstance(plot, dict):
-                plot = plot.get("plot", "")
-            _print_synopsis(m["title"], plot)
-        rep = input("  add? (y/n): ").lower().strip()
-        if rep == "y":
-            # Find matching output entry
-            out_entry = next((o for o in output if o["title"] == m["title"]), None)
-            if out_entry and add_to_radarr(out_entry):
-                added.append(m["title"])
-                RUN_STATS["added"] += 1
-                BLACKLIST.add(m["title"])
-        else:
-            bl_rep = input(f"    Blacklist '{m['title']}'? (y/n): ").lower()
-            if bl_rep == "y":
-                BLACKLIST.add(m["title"])
-    return added
-
-
 def export_recommendations(output: list, filepath: str):
     """Export recommendations to CSV or HTML."""
     import csv as csv_module
@@ -1784,12 +1738,6 @@ def _build_target_genres(genre_arg: str) -> set:
     return result
 
 
-def _sequel_candidates(radarr_movies: list, blacklist_titles: set) -> list:
-    """Find sequels/prequels of films in the library that are NOT yet owned."""
-    # We ask Ollama to find sequels for each source film
-    # Simple heuristic: titles sharing main keyword with source
-    pass  # Handled via Ollama suggestions naturally
-
 def _is_sequel_of(candidate_title: str, source_title: str) -> bool:
     """Detect if candidate is likely a sequel/prequel of source."""
     # Extract main words (ignore articles, numbers)
@@ -1850,7 +1798,11 @@ def validate_candidate(raw_title, base, radarr_titles, radarr_tmdb, relaxed=Fals
         if not (target_genres & cand_genres_set) and (adjacent & cand_genres_set):
             log(f"  Genre adjacent (soft match): {omdb['title']}", "DEBUG")
     sc, reasons = score_candidate(base, omdb, relaxed=relaxed)
-    min_sc = 5.5 if relaxed else 4.0
+    # Lowered from 4.0 — the previous floor was over-rejecting candidates
+    # with no plot_sim (--no-embed or embeddings disabled). With the fixed
+    # score_candidate() the no-embedding case no longer double-penalises,
+    # so 3.5 keeps the noise out without losing good matches.
+    min_sc = 5.5 if relaxed else 3.5
     if sc < min_sc:
         RUN_STATS["filtered_score"] += 1
         log(f"  Score too low: {omdb['title']} -> {sc}", "DEBUG")
@@ -1923,7 +1875,10 @@ def process_source(base: dict, radarr_titles: set, radarr_tmdb: set) -> list:
                     if c and c["title"] not in {x["title"] for x in validated}:
                         validated.append(c)
     validated.sort(key=lambda x: x["score"], reverse=True)
-    return validated[:4]
+    # Was hardcoded to [:4] — disconnected from --suggestions (default 14)
+    # and from --top. Capping at the number of suggestions the LLM actually
+    # generated lets downstream --top do the final cut.
+    return validated[:args.suggestions]
 
 # =========================
 # REPORT
