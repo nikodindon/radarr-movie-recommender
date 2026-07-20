@@ -179,16 +179,9 @@ parser.add_argument("--analyze",       action="store_true",
     help="AI-powered collection analysis with personalized recommendations")
 parser.add_argument("--synopsis", action="store_true",
     help="Show full plot synopsis when reviewing films one by one")
-# V5.5: web UI display toggles. These flags are read by the web runner
-# (radarr_reco/web/runner.py) to decide what to put in each film card.
-# They do NOT affect the CLI flow (the CLI always shows synopsis when
-# --synopsis is on, regardless of these flags).
-parser.add_argument("--ui-show-posters", action="store_true",
-    help="(web UI) display the OMDb poster image in each film card")
-parser.add_argument("--ui-show-synopsis", action="store_true",
-    help="(web UI) display the OMDb plot synopsis in each film card")
-parser.add_argument("--ui-show-credits", action="store_true",
-    help="(web UI) display director and main actors in each film card")
+# V5.5 toggles were removed in V5.7: poster/synopsis/credits are
+# always shown in the web UI now. The OMDb cache keeps the cost
+# at zero on warm runs.
 parser.add_argument("--imdb-min", type=float, default=None,
     help="Minimum IMDb rating override (e.g. --imdb-min 7.5)")
 parser.add_argument("--export",        type=str,   default=None,

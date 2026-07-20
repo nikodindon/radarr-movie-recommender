@@ -11,7 +11,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -47,28 +47,19 @@ async def start_run(
     mode: str = Form("library"),
     mood: str = Form(""),
     like_title: str = Form(""),
-    # V5.5: web UI display toggles. Each is a checkbox in the start form.
-    show_posters: Optional[str] = Form(None),
-    show_synopsis: Optional[str] = Form(None),
-    show_credits: Optional[str] = Form(None),
 ):
     """Démarre un run en background et redirige vers la page de run."""
     if mode not in ("library", "mood", "like"):
         raise HTTPException(400, f"Unknown mode: {mode}")
     state = runner.new_run(mode=mode)
-    # HTML checkboxes only submit when checked. FastAPI gives us the
-    # value "on" when present, None when absent. We coerce to bool.
-    state.ui_options["show_posters"] = show_posters is not None
-    state.ui_options["show_synopsis"] = show_synopsis is not None
-    state.ui_options["show_credits"] = show_credits is not None
+    # V5.7: poster/synopsis/credits are now ALWAYS shown (no opt-in).
+    # The cost is one OMDb call per film, but the OMDb cache makes
+    # this free on warm runs.
+    state.ui_options["show_posters"] = True
+    state.ui_options["show_synopsis"] = True
+    state.ui_options["show_credits"] = True
     params = {
         "mood": mood, "like": like_title,
-        # These are pushed into newmovies.args before main() runs.
-        # They don't affect the CLI's behaviour, only what the runner
-        # copies into the captured Candidate objects.
-        "ui_show_posters": show_posters is not None,
-        "ui_show_synopsis": show_synopsis is not None,
-        "ui_show_credits": show_credits is not None,
     }
     runner.run_in_thread(state, params)
     return JSONResponse({"run_id": state.run_id, "redirect": f"/run/{state.run_id}"})

@@ -186,40 +186,28 @@ def run_library(start_params: dict, state: RunState) -> bool:
         Each candidate is added to state.candidates with no decision.
         The user will click accept/refuse/blacklist in the UI.
 
-        V5.5: if the user ticked one of the display toggles
-        (posters/synopsis/credits), we re-fetch OMDb for each film
-        to populate the matching fields. The OMDb cache is hit when
-        possible, so this is essentially free on warm runs.
+        V5.7: poster/synopsis/director/actors are always fetched from
+        OMDb for every candidate. The OMDb cache keeps warm-run cost
+        at zero. On a cold run, this is 1 OMDb call per film (10 calls
+        for 10 candidates), well within the 1000 req/day free tier.
         """
-        ui = state.ui_options
-        want_posters = ui.get("show_posters", False)
-        want_synopsis = ui.get("show_synopsis", False)
-        want_credits = ui.get("show_credits", False)
-        # Only pay the OMDb cost if at least one toggle is on.
-        enrich = want_posters or want_synopsis or want_credits
         for m in output:
             poster = ""
             director = ""
             actors = ""
             plot = ""
-            if enrich:
-                # m["lookup"] is the Radarr lookup result; it doesn't
-                # have poster/plot. We need OMDb. The runner's own
-                # newmovies module exposes get_omdb_full() with the
-                # built-in cache. Falls back to '' on failure (network
-                # down, OMDb 404, etc.) so the UI degrades gracefully.
-                try:
-                    full = newmovies.get_omdb_full(
-                        m.get("title", ""), m.get("year"))
-                except Exception as e:
-                    full = None
-                    state.append_log("warning",
-                        f"OMDb enrich failed for {m.get('title')!r}: {e}")
-                if full:
-                    poster = full.get("poster", "") if want_posters else ""
-                    director = full.get("director", "") if want_credits else ""
-                    actors = full.get("actors", "") if want_credits else ""
-                    plot = full.get("plot", "") if want_synopsis else ""
+            try:
+                full = newmovies.get_omdb_full(
+                    m.get("title", ""), m.get("year"))
+            except Exception as e:
+                full = None
+                state.append_log("warning",
+                    f"OMDb enrich failed for {m.get('title')!r}: {e}")
+            if full:
+                poster = full.get("poster", "")
+                director = full.get("director", "")
+                actors = full.get("actors", "")
+                plot = full.get("plot", "")
             c = Candidate(
                 title=m.get("title", ""),
                 year=m.get("year"),
