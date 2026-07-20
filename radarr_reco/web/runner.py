@@ -290,6 +290,10 @@ def run_library(start_params: dict, state: RunState) -> bool:
         newmovies.args.composer = _adv["composer"]
     if _adv.get("author"):
         newmovies.args.author = _adv["author"]
+    if _adv.get("top") is not None:
+        newmovies.args.top = _adv["top"]
+    if _adv.get("suggestions") is not None:
+        newmovies.args.suggestions = _adv["suggestions"]
 
     state.append_log("info", f"Run started: mode={state.mode} at {state.started_at.isoformat()}")
     state.append_log("info", "Web runner: dry_run=True, auto=False, candidates will be collected for UI")

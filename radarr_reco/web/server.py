@@ -61,6 +61,11 @@ async def start_run(
     cast: str = Form(""),
     composer: str = Form(""),
     author: str = Form(""),
+    # V5.16: top (final picks) and suggestions (LLM pool size).
+    # Both are optional numbers; the runner forwards them into
+    # newmovies.args. Empty string = use default (10 / 25).
+    top: str = Form(""),
+    suggestions: str = Form(""),
 ):
     """Démarre un run en background et redirige vers la page de run."""
     if mode not in ("library", "mood", "like"):
@@ -91,6 +96,9 @@ async def start_run(
         "cast": cast,
         "composer": composer,
         "author": author,
+        # V5.16: top / suggestions. None means "use argparse default".
+        "top": _int(top),
+        "suggestions": _int(suggestions),
     }
     runner.run_in_thread(state, params)
     return JSONResponse({"run_id": state.run_id, "redirect": f"/run/{state.run_id}"})

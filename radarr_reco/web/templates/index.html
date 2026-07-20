@@ -58,6 +58,14 @@
           <input type="text" name="author" placeholder="Stephen King" size="30">
         </label>
       </div>
+      <div class="advanced-grid">
+        <label>Top (final recommendations, default 10, max 50):<br>
+          <input type="number" name="top" placeholder="10" min="1" max="50" size="6">
+        </label>
+        <label>LLM pool size (default 25, max 100):<br>
+          <input type="number" name="suggestions" placeholder="25" min="5" max="100" size="6">
+        </label>
+      </div>
     </details>
     <button type="submit">Start run</button>
   </form>
