@@ -265,6 +265,18 @@ def run_library(start_params: dict, state: RunState) -> bool:
         newmovies.args.yes = True
         newmovies.args.web = False      # CRITICAL: don't recursively launch the server
 
+    # V5.6: forward the form params into newmovies.args so main()
+    # dispatches to the right mode (mood/like/library). The start form
+    # sends 'mood', 'like_title', etc. — we copy them onto args.
+    # Library mode is the default (no flag set), so we only need to
+    # handle the special-case modes here.
+    mood = start_params.get("mood", "") if start_params else ""
+    like = start_params.get("like", "") if start_params else ""
+    if mood:
+        newmovies.args.mood = mood
+    if like:
+        newmovies.args.like = like
+
     state.append_log("info", f"Run started: mode={state.mode} at {state.started_at.isoformat()}")
     state.append_log("info", "Web runner: dry_run=True, auto=False, candidates will be collected for UI")
 
