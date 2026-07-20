@@ -10,6 +10,8 @@ reco_*.json
 __pycache__/
 *.pyc
 *.pyo
+.venv/
+.pytest_cache/
 
 # Variables d'environnement
 .env
