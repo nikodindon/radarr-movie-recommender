@@ -199,7 +199,15 @@ class LLMBackend(ABC):
         return parse_film_titles(self.chat(prompt, kind="long", max_tokens=2048))
 
     def suggest_from_mood(self, mood: str, n: int, genre: str = None) -> list:
-        genre_i = f'- Suggestions MUST be {genre} films\n' if genre else ""
+        # V5.19: tolerate args.genre being None or missing entirely.
+        # The web runner and CLI both pass it as a keyword, but
+        # direct callers (e.g. tests) may construct args without
+        # that field. Previously crashed with 'Args object has no
+        # attribute genre'.
+        if not genre:
+            genre_i = ""
+        else:
+            genre_i = f'- Suggestions MUST be {genre} films\n'
         prompt = (
             f'You are a film expert with encyclopedic knowledge of world cinema.\n\n'
             f'The user is looking for films with this specific mood or atmosphere: '
