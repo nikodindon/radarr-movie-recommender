@@ -108,20 +108,42 @@ function buildCard(c) {
   div.className = "card";
   div.id = "card-" + cssId(c.title);
   const reasons = (c.reasons || []).join(", ");
+  // V5.5: layout switches based on whether a poster is available.
+  // 'card-with-poster' = horizontal layout (poster on the left, text
+  // on the right). 'card-plain' = stacked like before. The CSS rules
+  // in style.css handle both.
+  const hasPoster = c.poster && c.poster !== "N/A";
+  div.classList.add(hasPoster ? "card-with-poster" : "card-plain");
   // Use data-attributes + event delegation instead of inline onclick.
   // Inline onclick breaks when c.title contains apostrophes (e.g.
   // "It's a Wonderful Life") because the JS string is delimited by '.
+  const posterHTML = hasPoster
+    ? `<img class="poster" src="${escapeAttr(c.poster)}" alt="${escapeAttr(c.title)} poster" loading="lazy" onerror="this.style.display='none'">`
+    : "";
+  const synopsisHTML = c.plot
+    ? `<p class="plot">${escapeHtml(c.plot)}</p>`
+    : "";
+  const director = c.director && c.director !== "N/A" ? c.director : "";
+  const actors = c.actors && c.actors !== "N/A" ? c.actors : "";
+  const creditsHTML = (director || actors)
+    ? `<p class="credits">${director ? `<span class="director">Dir. ${escapeHtml(director)}</span>` : ""}${director && actors ? " · " : ""}${actors ? `<span class="actors">${escapeHtml(actors)}</span>` : ""}</p>`
+    : "";
   div.innerHTML = `
-    <h4>${escapeHtml(c.title)} <span class="year">(${c.year || "?"})</span></h4>
-    <p class="meta">IMDb ${c.rating.toFixed(1)} · score ${c.score.toFixed(2)}</p>
-    <p class="reasons">${escapeHtml(reasons)}</p>
-    <p class="source">from: ${escapeHtml(c.source || "")}</p>
-    <div class="actions" data-cid="${cssId(c.title)}">
-      <button data-decision="accept">Accept</button>
-      <button data-decision="refuse">Refuse</button>
-      <button data-decision="blacklist">Refuse + Blacklist</button>
+    ${posterHTML}
+    <div class="card-body">
+      <h4>${escapeHtml(c.title)} <span class="year">(${c.year || "?"})</span></h4>
+      <p class="meta">IMDb ${(c.rating || 0).toFixed(1)} · score ${(c.score || 0).toFixed(2)}</p>
+      <p class="reasons">${escapeHtml(reasons)}</p>
+      <p class="source">from: ${escapeHtml(c.source || "")}</p>
+      ${creditsHTML}
+      ${synopsisHTML}
+      <div class="actions" data-cid="${cssId(c.title)}">
+        <button data-decision="accept">Accept</button>
+        <button data-decision="refuse">Refuse</button>
+        <button data-decision="blacklist">Refuse + Blacklist</button>
+      </div>
+      <p class="decision" id="decision-${cssId(c.title)}"></p>
     </div>
-    <p class="decision" id="decision-${cssId(c.title)}"></p>
   `;
   // Attach listeners after innerHTML is set (innerHTML wipes them).
   const actions = div.querySelector(".actions");

@@ -177,9 +177,19 @@ parser.add_argument("--watchlist",     type=str,   default=None,
     help="Import films from Letterboxd or IMDb CSV watchlist file")
 parser.add_argument("--analyze",       action="store_true",
     help="AI-powered collection analysis with personalized recommendations")
-parser.add_argument("--synopsis",      action="store_true",
-    help="Show plot synopsis when reviewing films one by one")
-parser.add_argument("--imdb-min",      type=float, default=None,
+parser.add_argument("--synopsis", action="store_true",
+    help="Show full plot synopsis when reviewing films one by one")
+# V5.5: web UI display toggles. These flags are read by the web runner
+# (radarr_reco/web/runner.py) to decide what to put in each film card.
+# They do NOT affect the CLI flow (the CLI always shows synopsis when
+# --synopsis is on, regardless of these flags).
+parser.add_argument("--ui-show-posters", action="store_true",
+    help="(web UI) display the OMDb poster image in each film card")
+parser.add_argument("--ui-show-synopsis", action="store_true",
+    help="(web UI) display the OMDb plot synopsis in each film card")
+parser.add_argument("--ui-show-credits", action="store_true",
+    help="(web UI) display director and main actors in each film card")
+parser.add_argument("--imdb-min", type=float, default=None,
     help="Minimum IMDb rating override (e.g. --imdb-min 7.5)")
 parser.add_argument("--export",        type=str,   default=None,
     help="Export recommendations to file (e.g. --export reco.csv or --export reco.html)")
@@ -560,6 +570,10 @@ def get_omdb_full(raw_title: str, year=None):
         "rating":   rating,
         "plot":     data.get("Plot", ""),
         "imdb_id":  data.get("imdbID", ""),
+        # V5.5: OMDb exposes a public Poster URL. Used by the web UI
+        # when --show-posters is on. No local download (see design
+        # note in radarr_reco/web/server.py around _read_web_config).
+        "poster":   data.get("Poster", ""),
     }
     OMDB_CACHE[cache_key] = result
     return result

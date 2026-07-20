@@ -67,6 +67,43 @@ pre {
 .card .meta { color: #aad; font-size: 0.9em; margin: 0.2rem 0; }
 .card .reasons { color: #888; font-size: 0.85em; margin: 0.3rem 0; }
 .card .source { color: #666; font-size: 0.8em; font-style: italic; }
+
+/* V5.5: enriched card layouts.
+   .card-plain = stacked, no poster (default behaviour)
+   .card-with-poster = grid: poster column 120px wide on the left,
+   text on the right. Posters come straight from OMDb URLs. */
+.card-plain { /* nothing extra */ }
+.card-with-poster {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+.card-with-poster .poster {
+  width: 120px;
+  height: auto;
+  border-radius: 4px;
+  background: #1a1a1a;
+  display: block;
+}
+.card-body { min-width: 0; }
+.card .credits {
+  margin: 0.3rem 0; font-size: 0.85rem; color: #aaa;
+}
+.card .credits .director { color: #b8c5d6; }
+.card .plot {
+  margin: 0.5rem 0; font-size: 0.9rem; color: #ccc;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.card .plot.expanded {
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+.hint { color: #888; font-size: 0.85rem; margin: 0.5rem 0 0 0; }
 .card .actions { margin-top: 0.7rem; }
 .card .decision { font-size: 0.85em; margin: 0.3rem 0 0 0; }
 .decision-accept { color: #44ff88; }

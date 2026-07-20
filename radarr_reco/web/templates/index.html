@@ -22,6 +22,18 @@
         <input type="text" name="like_title" placeholder="e.g. Inception" size="50">
       </label>
     </div>
+    <fieldset>
+      <legend>Display (web UI only)</legend>
+      <label><input type="checkbox" name="show_posters" checked>
+        Show movie posters (from OMDb)</label><br>
+      <label><input type="checkbox" name="show_synopsis">
+        Show plot synopsis under each card</label><br>
+      <label><input type="checkbox" name="show_credits">
+        Show director and main actors</label>
+      <p class="hint">Toggling these on re-fetches OMDb for the 10
+        final picks; cached entries are instant. Posters are loaded
+        directly from OMDb (no local download).</p>
+    </fieldset>
     <button type="submit">Start run</button>
   </form>
 </section>

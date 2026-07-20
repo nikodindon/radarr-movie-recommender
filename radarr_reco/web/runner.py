@@ -49,6 +49,13 @@ class Candidate:
     plot: str = ""
     source: str = ""
     lookup: dict = field(default_factory=dict)
+    # V5.5: enriched card fields. Only populated when the user
+    # ticked the corresponding checkbox in the start-run form.
+    # They live on Candidate (not just lookup) so the web UI doesn't
+    # need to re-parse the OMDb dict every refresh.
+    poster: str = ""
+    director: str = ""
+    actors: str = ""
 
 
 @dataclass
@@ -63,6 +70,13 @@ class RunState:
     # decisions: title -> 'accept' | 'refuse' | 'blacklist' | ''
     final_summary: dict = field(default_factory=dict)
     json_path: str = ""  # reco_*.json saved at end
+    # V5.5: web UI display toggles. The runner reads these to decide
+    # which fields to copy from OMDb into each Candidate.
+    ui_options: dict = field(default_factory=lambda: {
+        "show_posters": False,
+        "show_synopsis": False,
+        "show_credits": False,
+    })
 
     def append_log(self, level: str, text: str):
         self.log_lines.append({
@@ -170,8 +184,42 @@ def run_library(start_params: dict, state: RunState) -> bool:
     def web_confirm_and_add(output, missing=None, label="") -> list:
         """Replace the interactive prompt with auto-collect.
         Each candidate is added to state.candidates with no decision.
-        The user will click accept/refuse/blacklist in the UI."""
+        The user will click accept/refuse/blacklist in the UI.
+
+        V5.5: if the user ticked one of the display toggles
+        (posters/synopsis/credits), we re-fetch OMDb for each film
+        to populate the matching fields. The OMDb cache is hit when
+        possible, so this is essentially free on warm runs.
+        """
+        ui = state.ui_options
+        want_posters = ui.get("show_posters", False)
+        want_synopsis = ui.get("show_synopsis", False)
+        want_credits = ui.get("show_credits", False)
+        # Only pay the OMDb cost if at least one toggle is on.
+        enrich = want_posters or want_synopsis or want_credits
         for m in output:
+            poster = ""
+            director = ""
+            actors = ""
+            plot = ""
+            if enrich:
+                # m["lookup"] is the Radarr lookup result; it doesn't
+                # have poster/plot. We need OMDb. The runner's own
+                # newmovies module exposes get_omdb_full() with the
+                # built-in cache. Falls back to '' on failure (network
+                # down, OMDb 404, etc.) so the UI degrades gracefully.
+                try:
+                    full = newmovies.get_omdb_full(
+                        m.get("title", ""), m.get("year"))
+                except Exception as e:
+                    full = None
+                    state.append_log("warning",
+                        f"OMDb enrich failed for {m.get('title')!r}: {e}")
+                if full:
+                    poster = full.get("poster", "") if want_posters else ""
+                    director = full.get("director", "") if want_credits else ""
+                    actors = full.get("actors", "") if want_credits else ""
+                    plot = full.get("plot", "") if want_synopsis else ""
             c = Candidate(
                 title=m.get("title", ""),
                 year=m.get("year"),
@@ -179,9 +227,12 @@ def run_library(start_params: dict, state: RunState) -> bool:
                 score=m.get("score", 0.0),
                 reasons=m.get("reasons", []),
                 imdb_id="",  # not in the flat output
-                plot="",     # not in the flat output
+                plot=plot,
                 source=m.get("source", ""),
                 lookup=m.get("lookup", {}),
+                poster=poster,
+                director=director,
+                actors=actors,
             )
             state.add_candidate(c)
             captured_candidates.append(c)
