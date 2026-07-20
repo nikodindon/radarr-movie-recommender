@@ -166,10 +166,48 @@ Your Radarr library
 
 ---
 
+## LLM backend — Ollama or llama.cpp (since dev branch)
+
+The recommender needs a local LLM for film suggestions, saga detection, and
+filmography generation. The script supports **two interchangeable backends**
+via `config.yaml` → `llm_backend`:
+
+| Backend      | When to use                                                                 | Pros                                | Cons                                 |
+|--------------|-----------------------------------------------------------------------------|-------------------------------------|--------------------------------------|
+| `ollama`     | You have Ollama installed locally (`ollama serve`)                          | Easy, well-tested, embeddings work  | Heavy runtime, separate service      |
+| `llamacpp`   | You run a `llama-server` exposing the OpenAI-compatible API (port 8080)    | Direct GGUF, no Ollama overhead     | `/v1/embeddings` needs `--embeddings` |
+
+**`llamacpp` example (recommended for users already on llama.cpp):**
+
+```yaml
+llm_backend: llamacpp
+llm_model: /path/to/your-model.gguf    # exactly as /v1/models lists it
+llamacpp_base_url: http://192.168.1.32:8080
+```
+
+Launch llama-server like this (the embeddings flag is optional, only needed
+for plot-similarity scoring):
+
+```bash
+./llama-server -m your-model.gguf --host 0.0.0.0 --port 8080 -c 8192 [--embeddings]
+```
+
+**Notes specific to reasoning models** (Qwen, DeepSeek-R1, ornith-aeon, etc.):
+the backend automatically forces `max_tokens >= 2048` so the chain-of-thought
+doesn't eat the entire output budget. Expect ~30-90s per suggestion on a 35B
+quantized model. For nightly cron runs that's fine; for interactive use,
+consider a smaller model (8-14B) or enable the GPU offload.
+
+**Fallback:** if the LLM is unreachable, the script still runs the Radarr +
+OMDb pipeline — AI suggestions just return empty. The whole thing degrades
+gracefully instead of crashing.
+
+---
+
 ## Requirements
 
 - Python 3.10+
-- [Ollama](https://ollama.com/) running locally
+- A local LLM: either [Ollama](https://ollama.com/) **or** [llama.cpp](https://github.com/ggerganov/llama.cpp) `llama-server`
 - A running [Radarr](https://radarr.video/) instance
 - A free [OMDb API key](https://www.omdbapi.com/apikey.aspx) (1000 req/day)
 

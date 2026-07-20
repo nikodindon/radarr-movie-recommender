@@ -18,7 +18,6 @@ import math
 import logging
 import os
 import random
-import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +28,13 @@ try:
     YAML_AVAILABLE = True
 except ImportError:
     YAML_AVAILABLE = False
+
+# LLM backend (llm_backend.py) — abstraction Ollama/llama.cpp
+try:
+    from llm_backend import make_backend as _make_llm_backend, LLMBackend
+    LLM_BACKEND_AVAILABLE = True
+except ImportError:
+    LLM_BACKEND_AVAILABLE = False
 
 # =========================
 # CONFIG LOADING
@@ -84,7 +90,9 @@ if not RADARR_API_KEY:
 
 CONFIG_FILE      = "omdb_apikey.conf"
 BLACKLIST_FILE   = "blacklist.json"
-OLLAMA_EMBED_URL = "http://localhost:11434/api/embeddings"
+# OLLAMA_EMBED_URL conservé pour rétro-compat (OllamaBackend lit $OLLAMA_EMBED_URL
+# ou retombe sur cette valeur). Ignoré quand llm_backend=llamacpp.
+OLLAMA_EMBED_URL = os.environ.get("OLLAMA_EMBED_URL", "http://localhost:11434/api/embeddings")
 LOG_DIR          = "logs"
 
 ADJACENT_GENRES = {
@@ -336,38 +344,50 @@ if not test_omdb_key(CURRENT_OMDB_KEY):
         exit(1)
 
 # =========================
-# OLLAMA
+# LLM BACKEND (remplace l'ancien bloc OLLAMA)
 # =========================
-def test_ollama():
-    # Allow more time for large models to load into VRAM
-    warmup_timeout = 300 if getattr(args, "no_timeout", False) else 120
-    for attempt in range(2):
+def _build_llm_backend():
+    """Construit le backend LLM selon config.yaml (llm_backend: llamacpp|ollama).
+       Lit aussi les paramètres additionnels (llamacpp_base_url, etc.).
+    """
+    if not LLM_BACKEND_AVAILABLE:
+        return None
+    base = Path(__file__).parent
+    cfg_file = base / "config.yaml"
+    cfg = {}
+    if cfg_file.exists() and YAML_AVAILABLE:
         try:
-            result = subprocess.run(
-                ["ollama", "run", OLLAMA_MODEL],
-                input="Reply with only the word OK.",
-                text=True, capture_output=True,
-                timeout=warmup_timeout,
-                encoding="utf-8", errors="replace")
-            if "OK" in result.stdout.upper():
-                return True
-            # Model might be loading, wait and retry
-            if attempt == 0:
-                log(f"Ollama warming up model {OLLAMA_MODEL}...", "INFO")
-                time.sleep(5)
-        except subprocess.TimeoutExpired:
-            if attempt == 0:
-                log(f"Ollama slow to respond, retrying (model loading)...", "WARNING")
-                time.sleep(10)
-        except Exception as e:
-            log(f"Ollama test error: {e}", "DEBUG")
-            if attempt == 0:
-                time.sleep(5)
-    return False
+            with open(cfg_file, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+        except Exception:
+            pass
+    backend_cfg = {
+        "llm_backend":       cfg.get("llm_backend", "ollama"),
+        "llm_model":         cfg.get("llm_model") or cfg.get("ollama_model", OLLAMA_MODEL),
+        "llamacpp_base_url": cfg.get("llamacpp_base_url", "http://localhost:8080"),
+        "no_timeout":        getattr(args, "no_timeout", False),
+    }
+    try:
+        return _make_llm_backend(backend_cfg)
+    except Exception as e:
+        log(f"LLM backend init error: {e}", "ERROR")
+        return None
 
-OLLAMA_OK = test_ollama()
-log(f"Ollama {'ready' if OLLAMA_OK else 'UNAVAILABLE'}",
-    "SUCCESS" if OLLAMA_OK else "WARNING")
+LLM = _build_llm_backend()
+if LLM is not None:
+    LLM_OK = LLM.healthcheck()
+    label = f"{LLM.name} ({LLM.model})"
+    cprint(f"  LLM: {label}  base={getattr(LLM, 'base_url', 'local')}", "gray")
+else:
+    LLM_OK = False
+    cprint("  LLM: backend unavailable (llm_backend.py import failed)", "WARNING")
+
+# OLLAMA_OK conservé comme alias rétro-compatible utilisé partout dans le code.
+# Si tu passes à un autre backend, change OLLAMA_OK -> LLM_OK dans une seule
+# étape de refactor (voir TODO plus bas).
+OLLAMA_OK = LLM_OK
+log(f"LLM {'ready' if LLM_OK else 'UNAVAILABLE'}",
+    "SUCCESS" if LLM_OK else "WARNING")
 
 # =========================
 # CACHES + STATS
@@ -539,15 +559,16 @@ def get_embedding(text):
     key = text[:300]
     if key in EMBEDDING_CACHE:
         return EMBEDDING_CACHE[key]
-    try:
-        r = requests.post(OLLAMA_EMBED_URL,
-            json={"model": OLLAMA_MODEL, "prompt": text[:500]}, timeout=20)
-        emb = r.json().get("embedding")
-        EMBEDDING_CACHE[key] = emb
-        return emb
-    except:
-        EMBEDDING_CACHE[key] = None
-        return None
+    # Délégation au backend LLM (llama.cpp /v1/embeddings ou Ollama /api/embeddings).
+    emb = None
+    if LLM is not None:
+        try:
+            emb = LLM.embed(text)
+        except Exception as e:
+            log(f"Embedding error: {e}", "DEBUG")
+            emb = None
+    EMBEDDING_CACHE[key] = emb
+    return emb
 
 def cosine_similarity(a, b):
     if not a or not b or len(a) != len(b):
@@ -670,252 +691,79 @@ def _parse_ollama_titles(raw: str) -> list:
     return titles
 
 def ollama_suggest_titles(base: dict) -> list:
-    if not OLLAMA_OK:
+    if not OLLAMA_OK or LLM is None:
         return []
-    genre_instruction = (
-        f'- Suggestions MUST be {args.genre} films\n'
-        if args.genre else ""
-    )
-    mood_instruction = (
-        f'- The mood/atmosphere requested by the user is: "{args.mood}" -- prioritize films that match this feeling\n'
-        if args.mood else ""
-    )
-    prompt = (
-        f'You are a film expert with encyclopedic knowledge of world cinema.\n\n'
-        f'Source film: "{base["title"]}" ({base["year"]})\n'
-        f'Genre: {base["genre"]}\n'
-        f'Director: {base["director"]}\n'
-        f'Cast: {base["actors"]}\n'
-        f'Plot: {base["plot"]}\n\n'
-        f'Suggest {args.suggestions} REAL existing films similar in theme, tone, atmosphere, or narrative style.\n\n'
-        f'Rules:\n'
-        f'- Only real theatrically released films\n'
-        f'- Preferred IMDb rating above 6.5\n'
-        f'- No direct sequels/prequels of the source film\n'
-        f'- Vary the eras\n'
-        f'- Use exact English/international theatrical title\n'
-        f'- Do NOT include the source film itself\n'
-        f'{genre_instruction}'
-        f'{mood_instruction}'
-        f'\nRespond ONLY with valid JSON:\n'
-        f'{{"films": ["Title 1", "Title 2", ...]}}'
-    )
-    cprint(f"  [Ollama] Generating suggestions...", "magenta")
+    cprint(f"  [{LLM.name}] Generating suggestions...", "magenta")
     try:
-        _timeout = None if getattr(args, "no_timeout", False) else 120
-        result = subprocess.run(
-            ["ollama", "run", OLLAMA_MODEL],
-            input=prompt, text=True, capture_output=True,
-            timeout=_timeout, encoding="utf-8", errors="replace")
-        titles = _parse_ollama_titles(result.stdout)
-        cprint(f"  [Ollama] {len(titles)} titles extracted", "magenta")
-        logger.info(f"Ollama: {len(titles)} titles for '{base['title']}'")
+        titles = LLM.suggest_titles(base, n=args.suggestions,
+                                    genre=args.genre, mood=args.mood)
+        cprint(f"  [{LLM.name}] {len(titles)} titles extracted", "magenta")
+        logger.info(f"{LLM.name}: {len(titles)} titles for '{base['title']}'")
         return titles
-    except subprocess.TimeoutExpired:
-        log("Ollama timeout (120s)", "WARNING")
-        return []
     except Exception as e:
-        log(f"Ollama error: {e}", "ERROR")
+        log(f"{LLM.name} error: {e}", "ERROR")
         return []
 
 
 def ollama_suggest_from_title(film_title: str) -> list:
     """Generate suggestions based on a film title not in the library."""
-    if not OLLAMA_OK:
+    if not OLLAMA_OK or LLM is None:
         return []
-    mood_instruction = (
-        f'- The mood/atmosphere requested is: "{args.mood}" -- prioritize films that match this feeling\n'
-        if args.mood else ""
-    )
-    genre_instruction = (
-        f'- Suggestions MUST be {args.genre} films\n'
-        if args.genre else ""
-    )
-    prompt = (
-        f'You are a film expert with encyclopedic knowledge of world cinema.\n\n'
-        f'The user wants recommendations similar to: "{film_title}"\n\n'
-        f'Suggest {args.suggestions} REAL existing films that share the same theme, tone, '
-        f'atmosphere or narrative style as "{film_title}".\n\n'
-        f'Rules:\n'
-        f'- Only real theatrically released films\n'
-        f'- Preferred IMDb rating above 6.5\n'
-        f'- Do NOT include "{film_title}" itself\n'
-        f'- No direct sequels/prequels\n'
-        f'- Vary the eras\n'
-        f'- Use exact English/international theatrical title\n'
-        f'{genre_instruction}'
-        f'{mood_instruction}'
-        f'\nRespond ONLY with valid JSON:\n'
-        f'{{"films": ["Title 1", "Title 2", ...]}}'
-    )
-    cprint(f'  [Ollama] Generating suggestions based on "{film_title}"...', "magenta")
+    cprint(f'  [{LLM.name}] Generating suggestions based on "{film_title}"...', "magenta")
     try:
-        _timeout = None if getattr(args, "no_timeout", False) else 120
-        result = subprocess.run(
-            ["ollama", "run", OLLAMA_MODEL],
-            input=prompt, text=True, capture_output=True,
-            timeout=_timeout, encoding="utf-8", errors="replace")
-        titles = _parse_ollama_titles(result.stdout)
-        cprint(f'  [Ollama] {len(titles)} titles extracted', "magenta")
-        logger.info(f'Ollama --like: {len(titles)} titles for "{film_title}"')
+        titles = LLM.suggest_from_title(film_title, n=args.suggestions,
+                                        genre=args.genre, mood=args.mood)
+        cprint(f'  [{LLM.name}] {len(titles)} titles extracted', "magenta")
+        logger.info(f'{LLM.name} --like: {len(titles)} titles for "{film_title}"')
         return titles
-    except subprocess.TimeoutExpired:
-        log("Ollama timeout (120s)", "WARNING")
-        return []
     except Exception as e:
-        log(f"Ollama error: {e}", "ERROR")
+        log(f"{LLM.name} error: {e}", "ERROR")
         return []
 
 
 def ollama_suggest_from_mood(mood: str) -> list:
     """Generate suggestions purely based on a mood/atmosphere description."""
-    if not OLLAMA_OK:
+    if not OLLAMA_OK or LLM is None:
         return []
-    genre_instruction = (
-        f'- Suggestions MUST be {args.genre} films\n'
-        if args.genre else ""
-    )
-    # For mood mode, ask for more suggestions to compensate for blacklist filtering
+    # Pour le mode mood on demande plus de suggestions pour compenser le filtrage
+    # par blacklist (logique d'origine préservée).
     mood_suggestions = max(args.suggestions, 25)
-    prompt = (
-        f'You are a film expert with encyclopedic knowledge of world cinema.\n\n'
-        f'The user is looking for films with this specific mood or atmosphere: "{mood}"\n\n'
-        f'Suggest {mood_suggestions} REAL existing films that perfectly match this mood/atmosphere.\n\n'
-        f'Rules:\n'
-        f'- Only real theatrically released films\n'
-        f'- Include films across all IMDb rating levels if they match the mood\n'
-        f'- Vary the eras and genres\n'
-        f'- Use exact English/international theatrical title\n'
-        f'- Be exhaustive — list as many relevant films as possible\n'
-        f'{genre_instruction}'
-        f'\nRespond ONLY with valid JSON:\n'
-        f'{{"films": ["Title 1", "Title 2", ...]}}'
-    )
-    cprint(f'  [Ollama] Generating suggestions for mood: "{mood}"...', "magenta")
+    cprint(f'  [{LLM.name}] Generating suggestions for mood: "{mood}"...', "magenta")
     try:
-        _timeout = None if getattr(args, "no_timeout", False) else 120
-        result = subprocess.run(
-            ["ollama", "run", OLLAMA_MODEL],
-            input=prompt, text=True, capture_output=True,
-            timeout=_timeout, encoding="utf-8", errors="replace")
-        titles = _parse_ollama_titles(result.stdout)
-        cprint(f'  [Ollama] {len(titles)} titles extracted', "magenta")
-        logger.info(f'Ollama --mood: {len(titles)} titles for mood "{mood}"')
+        titles = LLM.suggest_from_mood(mood, n=mood_suggestions, genre=args.genre)
+        cprint(f'  [{LLM.name}] {len(titles)} titles extracted', "magenta")
+        logger.info(f'{LLM.name} --mood: {len(titles)} titles for mood "{mood}"')
         return titles
-    except subprocess.TimeoutExpired:
-        log("Ollama timeout (120s)", "WARNING")
-        return []
     except Exception as e:
-        log(f"Ollama error: {e}", "ERROR")
+        log(f"{LLM.name} error: {e}", "ERROR")
         return []
 
 
 def ollama_get_saga_films(saga_name: str) -> list:
-    """Ask Ollama for the complete list of films in a saga."""
-    if not OLLAMA_OK:
+    """Ask the LLM backend for the complete list of films in a saga."""
+    if not OLLAMA_OK or LLM is None:
         return []
-    prompt = (
-        f'You are a film expert with encyclopedic knowledge of world cinema.\n\n'
-        f'List EVERY theatrically released film in the "{saga_name}" saga/franchise '
-        f'in chronological release order.\n\n'
-        f'For "{saga_name}", this includes the COMPLETE list — do not omit any film.\n\n'
-        f'STRICT Rules:\n'
-        f'- Include ALL films: part 1, part 2, part 3... every numbered sequel\n'
-        f'- Include spin-offs and anthology films\n'
-        f'- NO TV shows, NO animated series, NO shorts, NO special editions\n'
-        f'- Use EXACT English theatrical release title (e.g. "Die Hard 2" not "Die Hard 2: Die Harder")\n'
-        f'- Do NOT skip any film, do NOT add comments or notes\n'
-        f'- Each entry must be ONLY the film title, nothing else\n'
-        f'\nRespond ONLY with this exact JSON (no other text before or after):\n'
-        f'{{"films": ["Title 1", "Title 2", "Title 3", "Title 4", "Title 5"]}}'
-    )
-    cprint(f'  [Ollama] Getting complete film list for saga: "{saga_name}"...', "magenta")
+    cprint(f'  [{LLM.name}] Getting complete film list for saga: "{saga_name}"...', "magenta")
     try:
-        _timeout = None if getattr(args, "no_timeout", False) else 120
-        result = subprocess.run(
-            ["ollama", "run", OLLAMA_MODEL],
-            input=prompt, text=True, capture_output=True,
-            timeout=_timeout, encoding="utf-8", errors="replace")
-        raw = result.stdout
-        # Try to parse JSON
-        m = re.search(r'\{[^{}]*"films"\s*:\s*\[([^\]]+)\][^{}]*\}', raw, re.DOTALL)
-        if m:
-            try:
-                data = json.loads(m.group(0))
-                titles = data.get("films", [])
-                cprint(f'  [Ollama] {len(titles)} films found in saga', "magenta")
-                return titles
-            except:
-                pass
-        # Fallback: parse line by line
-        titles = []
-        for line in raw.split("\n"):
-            m2 = re.match(r'^(?:\d+[\.)\)]|[-*])\s*(.+)$', line.strip())
-            if m2:
-                t = m2.group(1).strip().strip('"\'\'')
-                if 2 < len(t) < 100:
-                    titles.append(t)
-        if titles:
-            cprint(f'  [Ollama] {len(titles)} films found in saga', "magenta")
+        titles = LLM.get_saga_films(saga_name)
+        cprint(f'  [{LLM.name}] {len(titles)} films found in saga', "magenta")
         return titles
-    except subprocess.TimeoutExpired:
-        log("Ollama timeout (120s)", "WARNING")
-        return []
     except Exception as e:
-        log(f"Ollama error: {e}", "ERROR")
+        log(f"{LLM.name} error: {e}", "ERROR")
         return []
 
 
 def ollama_detect_sagas(radarr_titles: list) -> dict:
-    """Ask Ollama to identify which films belong to sagas and group them."""
-    if not OLLAMA_OK:
+    """Ask the LLM backend to identify which films belong to sagas and group them."""
+    if not OLLAMA_OK or LLM is None:
         return {}
-    # Send a sample of titles to avoid token overflow
-    sample = radarr_titles[:80]
-    prompt = (
-        f'You are a film expert.\n\n'
-        f'From this list of films, identify which ones belong to a saga or franchise '
-        f'(series of at least 2 related films).\n\n'
-        f'Films:\n'
-        + "\n".join(f'- {t}' for t in sample) +
-        f'\n\nFor each saga found, list its name and which films from the list belong to it.'
-        f'\nOnly include sagas where the list contains at least 1 film.'
-        f'\n\nRespond ONLY with valid JSON:\n'
-        f'{{"sagas": [{{"name": "Saga Name", "owned": ["Film 1", "Film 2"]}}, ...]}}'
-    )
-    cprint("  [Ollama] Detecting incomplete sagas in your library...", "magenta")
+    cprint("  [{LLM.name}] Detecting incomplete sagas in your library...".format(LLM_name=LLM.name), "magenta")
     try:
-        _timeout = None if getattr(args, "no_timeout", False) else 180
-        result = subprocess.run(
-            ["ollama", "run", OLLAMA_MODEL],
-            input=prompt, text=True, capture_output=True,
-            timeout=_timeout, encoding="utf-8", errors="replace")
-        raw = result.stdout
-        m = re.search(r'\{[^{}]*"sagas"\s*:\s*\[', raw, re.DOTALL)
-        if m:
-            # Find matching closing brace
-            start = m.start()
-            depth = 0
-            end = start
-            for i, ch in enumerate(raw[start:]):
-                if ch == '{': depth += 1
-                elif ch == '}': depth -= 1
-                if depth == 0:
-                    end = start + i + 1
-                    break
-            try:
-                data = json.loads(raw[start:end])
-                sagas = {s["name"]: s.get("owned", []) for s in data.get("sagas", [])}
-                cprint(f'  [Ollama] {len(sagas)} saga(s) detected', "magenta")
-                return sagas
-            except:
-                pass
-        return {}
-    except subprocess.TimeoutExpired:
-        log("Ollama timeout (180s)", "WARNING")
-        return {}
+        sagas = LLM.detect_sagas(radarr_titles)
+        cprint(f'  [{LLM.name}] {len(sagas)} saga(s) detected', "magenta")
+        return sagas
     except Exception as e:
-        log(f"Ollama error: {e}", "ERROR")
+        log(f"{LLM.name} error: {e}", "ERROR")
         return {}
 
 
@@ -1105,62 +953,24 @@ def run_saga_mode(radarr_titles: set, radarr_tmdb: set):
 
 
 def ollama_get_filmography(person: str, role: str) -> list:
-    """Ask Ollama for the complete filmography of a person based on their role."""
-    if not OLLAMA_OK:
+    """Ask the LLM backend for the complete filmography of a person based on their role."""
+    if not OLLAMA_OK or LLM is None:
         return []
 
-    # Handle multiple actors (comma-separated)
+    # Handle multiple actors (comma-separated) — la couche newmovies construit
+    # names_str en amont, le backend reçoit une seule string "X and Y".
     names = [n.strip() for n in person.split(",")]
     is_multi = len(names) > 1
     names_str = " and ".join(names) if is_multi else person
 
-    role_descriptions = {
-        "director": (
-            f"List ALL theatrical films directed by {names_str}.\n"
-            f"Include only films where {names_str} is the main director."
-        ),
-        "actor": (
-            f"List ALL theatrical films where {names_str} {'each have' if is_multi else 'has'} a significant role (lead or major supporting).\n"
-            f"{'Include films where ANY of these actors appears on screen.' if is_multi else f'Include only films where {person} actually appears on screen.'}"
-        ),
-        "cast": (
-            f"List ALL theatrical films where {names_str} ALL appear together in the same film.\n"
-            f"Only include films where EVERY one of these actors has a role: {', '.join(names)}."
-        ),
-        "composer": (
-            f"List ALL theatrical films for which {names_str} composed the original score/soundtrack.\n"
-            f"Include only films where {names_str} is the main composer."
-        ),
-        "author": (
-            f"List ALL theatrical films adapted from works written by {names_str}.\n"
-            f"Include novels, short stories, and plays adapted into films."
-        ),
-    }
-
-    role_desc = role_descriptions.get(role, f"List ALL theatrical films associated with {person}.")
+    # Reformulation du prompt pour multi-acteur (le backend a une version simple).
+    # On le fait ici pour préserver le comportement d'origine exactement.
+    if is_multi and role == "actor":
+        names_str_prompt = names_str  # utilisé tel quel par le backend
+    else:
+        names_str_prompt = person
 
     top_n = getattr(args, 'artist_top', 0)
-    limit_instruction = (
-        f'- List the {top_n} most notable films only'
-        if top_n > 0 else
-        '- Include ALL films, do not omit any'
-    )
-    prompt = "\n".join([
-        "You are a film expert with encyclopedic knowledge of world cinema.",
-        "",
-        role_desc,
-        "",
-        "STRICT Rules:",
-        "- Only REAL theatrically released films (NO TV shows, NO shorts)",
-        limit_instruction.strip(),
-        "- List in chronological release order",
-        "- Use EXACT English theatrical release title",
-        "- Each entry must be ONLY the film title, nothing else",
-        "",
-        'Respond ONLY with this exact JSON (no other text):',
-        '{"films": ["Title 1", "Title 2", "Title 3"]}',
-    ])
-
     role_labels = {
         "director": "films directed by",
         "actor":    "films featuring",
@@ -1169,93 +979,16 @@ def ollama_get_filmography(person: str, role: str) -> list:
         "author":   "adaptations of",
     }
     label = role_labels.get(role, "films for")
-    cprint(f'  [Ollama] Getting {label} "{person}"...', "magenta")
+    cprint(f'  [{LLM.name}] Getting {label} "{person}"...', "magenta")
 
+    if args.debug:
+        cprint(f'  [DEBUG] Calling LLM.get_filmography for {names_str_prompt}...', "gray")
     try:
-        if args.debug:
-            cprint(f'  [DEBUG] Starting subprocess for {person}...', "gray")
-        import copy
-        env = copy.copy(os.environ)
-        env["TERM"] = "dumb"
-        env["NO_COLOR"] = "1"
-        _timeout = None if getattr(args, "no_timeout", False) else 240
-        result = subprocess.run(
-            ["ollama", "run", OLLAMA_MODEL],
-            input=prompt, text=True, capture_output=True,
-            timeout=_timeout, encoding="utf-8", errors="replace",
-            env=env)
-        # Strip ANSI escape codes from output
-        raw = re.sub(r'\[[0-9;?]*[a-zA-Z]', '', result.stdout)
-        raw = re.sub(r'\[[0-9;?]*[hlm]', '', raw)
-        raw = raw.strip()
-        logger.debug(f"Ollama raw output for {person}: {raw[:500]}")
-
-        # Try JSON parse
-        m = re.search(r'\{[^{}]*"films"\s*:\s*\[', raw, re.DOTALL)
-        if m:
-            start = m.start()
-            depth, end = 0, start
-            for i, ch in enumerate(raw[start:]):
-                if ch == '{': depth += 1
-                elif ch == '}': depth -= 1
-                if depth == 0:
-                    end = start + i + 1
-                    break
-            try:
-                data = json.loads(raw[start:end])
-                titles = [t.strip() for t in data.get("films", []) if t.strip()]
-                cprint(f'  [Ollama] {len(titles)} films found', "magenta")
-                return titles
-            except:
-                pass
-
-        # Fallback: line by line
-        titles = []
-        for line in raw.split("\n"):
-            m2 = re.match(r'^(?:\d+[\.)\)]|[-*])\s*(.+)$', line.strip())
-            if m2:
-                t = re.sub(r'\s*\(\d{4}\)\s*$', '', m2.group(1).strip().strip('"\'\''))
-                if 2 < len(t) < 100:
-                    titles.append(t)
-        if titles:
-            cprint(f'  [Ollama] {len(titles)} films found (fallback)', "magenta")
+        titles = LLM.get_filmography(names_str_prompt, role, top_n=top_n)
+        cprint(f'  [{LLM.name}] {len(titles)} films found', "magenta")
         return titles
-
-    except subprocess.TimeoutExpired:
-        log("Ollama timeout — retrying with top 20 only...", "WARNING")
-        simple_prompt = "\n".join([
-            f"List the 20 most famous films where {person} is {role}.",
-            "Reply ONLY with JSON:",
-            '{"films": ["Title 1", "Title 2", "Title 3"]}',
-        ])
-        try:
-            _timeout2 = None if getattr(args, "no_timeout", False) else 120
-            result2 = subprocess.run(
-                ["ollama", "run", OLLAMA_MODEL],
-                input=simple_prompt, text=True, capture_output=True,
-                timeout=_timeout2, encoding="utf-8", errors="replace")
-            raw2 = result2.stdout
-            m2 = re.search(r'\{[^{}]*"films"\s*:\s*\[', raw2, re.DOTALL)
-            if m2:
-                start = m2.start()
-                depth, end = 0, start
-                for i, ch in enumerate(raw2[start:]):
-                    if ch == '{': depth += 1
-                    elif ch == '}': depth -= 1
-                    if depth == 0:
-                        end = start + i + 1
-                        break
-                data = json.loads(raw2[start:end])
-                titles = [t.strip() for t in data.get("films", []) if t.strip()]
-                if titles:
-                    cprint(f'  [Ollama] {len(titles)} films found (retry)', "magenta")
-                    return titles
-        except Exception:
-            pass
-        log("Ollama retry also failed", "WARNING")
-        return []
     except Exception as e:
-        log(f"Ollama error in filmography: {type(e).__name__}: {e}", "ERROR")
+        log(f"{LLM.name} error in filmography: {type(e).__name__}: {e}", "ERROR")
         import traceback
         if args.debug:
             cprint(f"  [DEBUG] Full traceback: {traceback.format_exc()}", "red")
@@ -1722,82 +1455,14 @@ def build_collection_profile(radarr: list) -> dict:
 
 
 def ollama_analyze_collection(profile: dict) -> tuple:
-    """Ask Ollama to analyze the collection and suggest directions."""
-    if not OLLAMA_OK:
+    """Ask the LLM backend to analyze the collection and suggest directions."""
+    if not OLLAMA_OK or LLM is None:
         return "", []
-
-    genres_str  = ", ".join(f"{g} ({c})" for g, c in profile["top_genres"])
-    decades_str = ", ".join(f"{d}s ({c})" for d, c in profile["top_decades"])
-    titles_str  = "\n".join(f"- {t}" for t in profile["sample_titles"][:25])
-
-    prompt = "\n".join([
-        "You are an expert film curator analyzing a personal movie collection.",
-        "",
-        f"Collection size: {profile['total']} films",
-        f"Average IMDb rating: {profile['avg_rating']}",
-        f"Top genres: {genres_str}",
-        f"Top decades: {decades_str}",
-        "",
-        "Sample of films in collection:",
-        titles_str,
-        "",
-        "Based on this collection, write a short personalized analysis (3-4 paragraphs):",
-        "1. Describe the cinephile profile (what kind of viewer this person is)",
-        "2. Identify strengths (what is well covered)",
-        "3. Identify gaps (what important films/directors/movements are missing)",
-        "4. Suggest 3 specific directions to explore",
-        "",
-        "Then provide exactly 10 film recommendations that fill the detected gaps.",
-        "These must be films NOT in the collection already.",
-        "",
-        "IMPORTANT: You MUST respond in this EXACT two-part format, do not skip either part:",
-        "",
-        "ANALYSIS:",
-        "[write your analysis here - 3 to 4 paragraphs]",
-        "",
-        "RECOMMENDATIONS:",
-        '{"films": ["Title 1", "Title 2", "Title 3", "Title 4", "Title 5", "Title 6", "Title 7", "Title 8", "Title 9", "Title 10"]}',
-        "",
-        "The RECOMMENDATIONS section is MANDATORY. Always end your response with the JSON.",
-    ])
-
-    cprint("  [Ollama] Analyzing your collection...", "magenta")
+    cprint("  [{LLM.name}] Analyzing your collection...".format(LLM_name=LLM.name), "magenta")
     try:
-        _timeout = None if getattr(args, "no_timeout", False) else 180
-        import copy
-        env = copy.copy(os.environ)
-        env["TERM"] = "dumb"
-        env["NO_COLOR"] = "1"
-        result = subprocess.run(
-            ["ollama", "run", OLLAMA_MODEL],
-            input=prompt, text=True, capture_output=True,
-            timeout=_timeout, encoding="utf-8", errors="replace", env=env)
-        raw = result.stdout.strip()
-
-        # Parse analysis text
-        analysis = ""
-        films    = []
-
-        if "ANALYSIS:" in raw:
-            parts = raw.split("RECOMMENDATIONS:")
-            analysis = parts[0].replace("ANALYSIS:", "").strip()
-            if len(parts) > 1:
-                rec_part = parts[1].strip()
-                m = re.search(r'"films"\s*:\s*\[([^\]]+)\]', rec_part, re.DOTALL)
-                if m:
-                    try:
-                        items = re.findall(r'"([^"]{2,80})"', m.group(0))
-                        films = [i for i in items if i != "films"]
-                    except:
-                        pass
-
-        return analysis, films
-
-    except subprocess.TimeoutExpired:
-        log("Ollama timeout on analysis", "WARNING")
-        return "", []
+        return LLM.analyze_collection(profile)
     except Exception as e:
-        log(f"Ollama error: {e}", "ERROR")
+        log(f"{LLM.name} error: {e}", "ERROR")
         return "", []
 
 
