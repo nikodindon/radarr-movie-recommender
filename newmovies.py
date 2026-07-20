@@ -239,7 +239,15 @@ def print_header(blacklist_size=0, genre_filter=None):
     now = datetime.now().strftime("%Y-%m-%d  %H:%M")
     cprint("=" * w, "white", bold=True)
     cprint(f"  RADARR MOVIE RECOMMENDER  v22          {now}", "white", bold=True)
-    cprint(f"  Model: {OLLAMA_MODEL:<20} Blacklist: {blacklist_size} titles", "gray")
+    # V5.8: model name was hardcoded to OLLAMA_MODEL (legacy, default
+    # "llama3.1:8b") even when the user is on llamacpp. Now we use
+    # the LLM backend's own label which knows the real model.
+    # Falls back to OLLAMA_MODEL if LLM is None (offline / init fail).
+    if LLM is not None:
+        model_label = f"{LLM.name} ({LLM.model})"
+    else:
+        model_label = OLLAMA_MODEL
+    cprint(f"  Model: {model_label:<30} Blacklist: {blacklist_size} titles", "gray")
     cprint(f"  Quality profile: {QUALITY_PROFILE_ID:<10} Availability: {MINIMUM_AVAILABILITY}", "gray")
     if genre_filter:
         cprint(f"  Genre filter: {genre_filter}", "cyan")
