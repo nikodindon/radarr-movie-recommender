@@ -911,8 +911,13 @@ def ollama_suggest_from_mood(mood: str) -> list:
     # par blacklist (logique d'origine préservée).
     mood_suggestions = max(args.suggestions, 25)
     cprint(f'  [{LLM.name}] Generating suggestions for mood: "{mood}"...', "magenta")
+    # V5.19: tolerate args.genre being None or missing. Without this,
+    # some web payloads where the genre field is absent would crash
+    # inside the prompt construction with "'Args' object has no
+    # attribute 'genre'" and silently return 0 titles.
+    mood_genre = getattr(args, "genre", None)
     try:
-        titles = LLM.suggest_from_mood(mood, n=mood_suggestions, genre=args.genre)
+        titles = LLM.suggest_from_mood(mood, n=mood_suggestions, genre=mood_genre)
         cprint(f'  [{LLM.name}] {len(titles)} titles extracted', "magenta")
         logger.info(f'{LLM.name} --mood: {len(titles)} titles for mood "{mood}"')
         return titles
