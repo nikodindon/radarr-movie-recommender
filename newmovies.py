@@ -2194,12 +2194,29 @@ def main():
                     continue
                 if omdb["title"] in radarr_titles or omdb["title"] in BLACKLIST:
                     continue
-                # Mood mode: trust Ollama's choices, use very low floor (4.0)
-                # --imdb-min overrides if specified
-                min_r = getattr(args, "imdb_min", None) if getattr(args, "imdb_min", None) else 4.0
+                # V5.14: cumulative filters from the advanced panel.
+                # --imdb-min (already partially supported, just fixed the
+                # broken getattr check). --genre is new: at least one overlap
+                # with the OMDb genre string. --sd/--fd is new: post-filter
+                # on year range. All are optional (None/empty = no filter).
+                if args.imdb_min is not None:
+                    min_r = args.imdb_min
+                else:
+                    min_r = 4.0  # mood default (trust LLM)
                 if omdb["rating"] < min_r and omdb["rating"] > 0:
                     continue
-                # For mood mode, skip genre/score filtering — Ollama chose these for the mood
+                if args.genre:
+                    wanted = {g.strip().lower() for g in args.genre.split(",") if g.strip()}
+                    film_genres = {g.strip().lower() for g in omdb.get("genre", "").split(",") if g.strip()}
+                    if wanted and not (wanted & film_genres):
+                        continue
+                if args.sd is not None and omdb["year"] and omdb["year"] < args.sd:
+                    log(f'  Filtered (before sd={args.sd}): {omdb["title"]} ({omdb["year"]})', "DEBUG")
+                    continue
+                if args.fd is not None and omdb["year"] and omdb["year"] > args.fd:
+                    log(f'  Filtered (after fd={args.fd}): {omdb["title"]} ({omdb["year"]})', "DEBUG")
+                    continue
+                # For mood mode, skip score-based filtering — Ollama chose these for the mood
                 lookup = get_radarr_lookup(omdb["title"], omdb["year"])
                 if not lookup or lookup.get("tmdbId") in radarr_tmdb:
                     continue
