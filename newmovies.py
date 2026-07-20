@@ -1269,32 +1269,38 @@ def run_artist_mode(person: str, role: str, radarr_titles: set, radarr_tmdb: set
             owned.append(omdb["title"])
             continue
 
-        # V5.18: verify OMDb director actually matches the role
-        # person. The LLM may return a title that exists in OMDb
-        # but is NOT by the requested director. Without this check,
+        # V5.18: verify the OMDb role field actually matches the
+        # requested person. The LLM may return a title that exists
+        # in OMDb but is NOT by the requested director / does NOT
+        # feature the requested actor / etc. Without this check,
         # the user gets 30%+ false positives (e.g. for "robert
         # zemeckis" we returned Cape Fear 1991 by Martin Scorsese,
         # Hugo 2011 by Scorsese, Sleepers 1996 by Barry Levinson,
-        # etc.). We compare case-insensitively on the OMDb
-        # director string (which is comma-separated for films
-        # with multiple directors). Substring match on full name
-        # to handle middle initials / name order.
-        omdb_director = (omdb.get("director") or "").lower()
-        person_lower = person.lower().strip()
-        # Match: person_lower appears in omdb_director (handles
-        # "Robert Zemeckis" matching "Robert Lee Zemeckis" or
-        # "Zemeckis, Robert" — but the latter needs special care
-        # since the OMDb format is "First Last").
-        # Simple approach: check both "first last" and
-        # "last, first" forms.
-        parts = person_lower.split()
-        first_last = person_lower
-        last_first = f"{parts[-1]}, {parts[0]}" if len(parts) >= 2 else person_lower
-        if person_lower not in omdb_director and first_last not in omdb_director \
-                and (len(parts) < 2 or parts[-1] not in omdb_director):
-            log(f'  Skipped (wrong director: {omdb_director!r} != {person!r}): '
-                f'{omdb["title"]} ({omdb["year"]})', "WARNING")
-            continue
+        # etc.; for "kevin james" we returned Zoolander 2001 by
+        # Ben Stiller, Austin Powers 1997 by Jay Roach, etc.).
+        # V5.20: role-aware. Check the right OMDb field for each
+        # role (director -> Director, actor/cast -> Actors,
+        # composer -> unspecified, author -> unspecified).
+        if role == "director":
+            role_field = "director"
+        elif role in ("actor", "cast"):
+            role_field = "actors"
+        else:
+            # composer / author: OMDb doesn't have dedicated
+            # fields we can verify against reliably. Skip the
+            # role check (preserves previous V5.x behaviour).
+            role_field = None
+        if role_field is not None:
+            omdb_role = (omdb.get(role_field) or "").lower()
+            person_lower = person.lower().strip()
+            parts = person_lower.split()
+            first_last = person_lower
+            last_first = f"{parts[-1]}, {parts[0]}" if len(parts) >= 2 else person_lower
+            if person_lower not in omdb_role and first_last not in omdb_role \
+                    and (len(parts) < 2 or parts[-1] not in omdb_role):
+                log(f'  Skipped (wrong {role_field}: {omdb_role!r} != {person!r}): '
+                    f'{omdb["title"]} ({omdb["year"]})', "WARNING")
+                continue
 
         if omdb["title"] in seen_titles:
             log(f'  Duplicate skipped: {omdb["title"]}', "DEBUG")
