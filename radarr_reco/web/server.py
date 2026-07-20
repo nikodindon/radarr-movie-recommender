@@ -84,20 +84,18 @@ async def run_state(run_id: str):
     state = runner.get_run(run_id)
     if state is None:
         raise HTTPException(404, f"Run {run_id} not found")
+    # V5.8: build the candidate dict from dataclasses.asdict so we
+    # don't have to remember each field by hand. When new fields are
+    # added to Candidate (poster, plot, director, actors, ...), they
+    # automatically appear in the JSON. The UI JS reads c.poster,
+    # c.plot, etc. so this matters.
+    import dataclasses
     return JSONResponse({
         "run_id": state.run_id,
         "status": state.status,
         "logs": state.log_lines[-200:],  # last 200 lines
         "candidates": [
-            {
-                "title": c.title,
-                "year": c.year,
-                "rating": c.rating,
-                "score": c.score,
-                "reasons": c.reasons,
-                "source": c.source,
-                "decision": state.decisions.get(c.title, ""),
-            }
+            {**dataclasses.asdict(c), "decision": state.decisions.get(c.title, "")}
             for c in state.candidates
         ],
         "summary": state.final_summary,
