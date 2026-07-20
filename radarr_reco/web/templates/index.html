@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Start a run{% endblock %}
+{% block content %}
+<section>
+  <h2>Start a new run</h2>
+  <form hx-post="/run" hx-target="body" hx-swap="none"
+        hx-headers='{"Accept": "application/json"}'
+        hx-on::after-request="if(event.detail.xhr.status === 200) { window.location = JSON.parse(event.detail.xhr.response).redirect; }">
+    <fieldset>
+      <legend>Mode</legend>
+      <label><input type="radio" name="mode" value="library" checked> Library (default)</label><br>
+      <label><input type="radio" name="mode" value="mood"> Mood</label><br>
+      <label><input type="radio" name="mode" value="like"> Like</label>
+    </fieldset>
+    <div>
+      <label>Mood text (only for mode=mood):<br>
+        <input type="text" name="mood" placeholder="e.g. dark, cerebral, slow burn" size="50">
+      </label>
+    </div>
+    <div>
+      <label>Source film title (only for mode=like):<br>
+        <input type="text" name="like_title" placeholder="e.g. Inception" size="50">
+      </label>
+    </div>
+    <button type="submit">Start run</button>
+  </form>
+</section>
+
+{% if runs %}
+<section>
+  <h2>Recent runs</h2>
+  <ul>
+  {% for r in runs|reverse %}
+    <li><a href="/run/{{ r.run_id }}">{{ r.run_id }}</a> — mode={{ r.mode }} status={{ r.status }} started={{ r.started_at.strftime('%Y-%m-%d %H:%M') }} candidates={{ r.candidates|length }}</li>
+  {% endfor %}
+  </ul>
+  <p><a href="/runs">All runs →</a></p>
+</section>
+{% endif %}
+{% endblock %}

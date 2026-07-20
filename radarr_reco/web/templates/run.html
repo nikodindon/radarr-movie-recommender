@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Run {{ state.run_id }}{% endblock %}
+{% block content %}
+<section id="status">
+  <h2>Run <code>{{ state.run_id }}</code></h2>
+  <p>
+    Mode: <strong>{{ state.mode }}</strong> ·
+    Status: <span id="status-badge" class="status-{{ state.status }}">{{ state.status }}</span> ·
+    Candidates: <span id="n-candidates">{{ state.candidates|length }}</span> ·
+    Decisions: <span id="n-decisions">0</span>
+  </p>
+  <p>
+    <a href="/">← back to home</a>
+  </p>
+</section>
+
+<section id="logs">
+  <h3>Live log</h3>
+  <pre id="log-box">Waiting for first log lines...</pre>
+</section>
+
+<section id="candidates">
+  <h3>Candidates</h3>
+  <p id="empty-msg" {% if state.candidates %}style="display:none"{% endif %}>
+    No candidates yet. They'll appear here as the run progresses.
+  </p>
+  <div id="cards">
+    {% for c in state.candidates %}
+    {% include "_card.html" %}
+    {% endfor %}
+  </div>
+</section>
+
+<section id="actions" {% if state.status != 'done' %}style="display:none"{% endif %}>
+  <h3>Push to Radarr</h3>
+  <p>
+    Accepted: <span id="n-accepted">0</span> ·
+    Refused: <span id="n-refused">0</span> ·
+    Blacklisted: <span id="n-blacklisted">0</span>
+  </p>
+  <button id="flush-btn" hx-post="/run/{{ state.run_id }}/flush" hx-swap="none"
+          hx-on::after-request="if(event.detail.xhr.status === 200) { document.getElementById('flush-result').innerText = JSON.stringify(event.detail.xhr.response, null, 2); this.disabled = true; }">
+    Push accepted to Radarr + save blacklist
+  </button>
+  <pre id="flush-result"></pre>
+</section>
+
+<script>
+// Polling 1Hz to refresh state (HTMX could do this with hx-trigger but
+// plain JS is simpler here).
+const runId = "{{ state.run_id }}";
+let lastLogCount = 0;
+let lastCandCount = 0;
+let lastDecisionCount = 0;
+
+async function refresh() {
+  try {
+    const r = await fetch(`/run/${runId}/state`);
+    if (!r.ok) return;
+    const data = await r.json();
+    // Update status badge
+    const badge = document.getElementById("status-badge");
+    badge.textContent = data.status;
+    badge.className = "status-" + data.status;
+    // Update logs
+    if (data.logs.length > lastLogCount) {
+      const logBox = document.getElementById("log-box");
+      if (lastLogCount === 0) logBox.textContent = "";
+      for (let i = lastLogCount; i < data.logs.length; i++) {
+        const line = data.logs[i];
+        const span = document.createElement("span");
+        span.className = "log-" + line.level;
+        span.textContent = line.text + "\n";
+        logBox.appendChild(span);
+      }
+      logBox.scrollTop = logBox.scrollHeight;
+      lastLogCount = data.logs.length;
+    }
+    // Update candidates
+    if (data.candidates.length > lastCandCount) {
+      const cards = document.getElementById("cards");
+      const empty = document.getElementById("empty-msg");
+      empty.style.display = "none";
+      for (let i = lastCandCount; i < data.candidates.length; i++) {
+        cards.appendChild(buildCard(data.candidates[i]));
+      }
+      lastCandCount = data.candidates.length;
+      document.getElementById("n-candidates").textContent = data.candidates.length;
+    }
+    // Update decisions count
+    const decCount = data.candidates.filter(c => c.decision).length;
+    if (decCount !== lastDecisionCount) {
+      document.getElementById("n-decisions").textContent = decCount;
+      lastDecisionCount = decCount;
+      updateCounters(data.candidates);
+    }
+    // Show actions if done
+    if (data.status === "done" || data.status === "flushed") {
+      document.getElementById("actions").style.display = "";
+    }
+  } catch (e) {
+    console.error("refresh failed", e);
+  }
+}
+
+function buildCard(c) {
+  const div = document.createElement("div");
+  div.className = "card";
+  div.id = "card-" + cssId(c.title);
+  const reasons = (c.reasons || []).join(", ");
+  div.innerHTML = `
+    <h4>${escapeHtml(c.title)} <span class="year">(${c.year || "?"})</span></h4>
+    <p class="meta">IMDb ${c.rating.toFixed(1)} · score ${c.score.toFixed(2)}</p>
+    <p class="reasons">${escapeHtml(reasons)}</p>
+    <p class="source">from: ${escapeHtml(c.source || "")}</p>
+    <div class="actions" id="actions-${cssId(c.title)}">
+      <button onclick="decide('${escapeAttr(c.title)}', 'accept', '${cssId(c.title)}')">Accept</button>
+      <button onclick="decide('${escapeAttr(c.title)}', 'refuse', '${cssId(c.title)}')">Refuse</button>
+      <button onclick="decide('${escapeAttr(c.title)}', 'blacklist', '${cssId(c.title)}')">Refuse + Blacklist</button>
+    </div>
+    <p class="decision" id="decision-${cssId(c.title)}"></p>
+  `;
+  return div;
+}
+
+function cssId(s) {
+  return s.replace(/[^a-zA-Z0-9]/g, "_");
+}
+
+function escapeHtml(s) {
+  if (s == null) return "";
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function escapeAttr(s) {
+  return escapeHtml(s).replace(/"/g, "&quot;");
+}
+
+async function decide(title, decision, cid) {
+  const fd = new FormData();
+  fd.append("title", title);
+  fd.append("decision", decision);
+  const r = await fetch(`/run/${runId}/decide`, {method: "POST", body: fd});
+  if (r.ok) {
+    const d = await r.json();
+    const el = document.getElementById("decision-" + cid);
+    el.textContent = "→ " + d.decision;
+    el.className = "decision decision-" + d.decision;
+    refresh();
+  } else {
+    alert("Decision failed: " + r.status);
+  }
+}
+
+function updateCounters(candidates) {
+  const counts = {accept: 0, refuse: 0, blacklist: 0};
+  for (const c of candidates) {
+    if (counts[c.decision] !== undefined) counts[c.decision]++;
+  }
+  document.getElementById("n-accepted").textContent = counts.accept;
+  document.getElementById("n-refused").textContent = counts.refuse;
+  document.getElementById("n-blacklisted").textContent = counts.blacklist;
+}
+
+setInterval(refresh, 1000);
+refresh();  // initial
+</script>
+{% endblock %}

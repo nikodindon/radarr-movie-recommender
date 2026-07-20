@@ -1,0 +1,13 @@
+{% for c in state.candidates %}
+<div class="card" id="card-{{ c.title|replace(' ', '_') }}">
+  <h4>{{ c.title }} <span class="year">({{ c.year or "?" }})</span></h4>
+  <p class="meta">IMDb {{ "%.1f"|format(c.rating) }} · score {{ "%.2f"|format(c.score) }}</p>
+  <p class="reasons">{{ c.reasons|join(", ") }}</p>
+  <p class="source">from: {{ c.source }}</p>
+  <div class="actions" id="actions-{{ c.title|replace(' ', '_') }}">
+    <button>Accept</button>
+    <button>Refuse</button>
+    <button>Refuse + Blacklist</button>
+  </div>
+</div>
+{% endfor %}

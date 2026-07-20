@@ -1,0 +1,77 @@
+/* radarr-reco web UI — dark theme, minimal */
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #1a1a2e; color: #e0e0e0;
+  line-height: 1.5;
+}
+header {
+  background: #0f0f1e; padding: 1rem 2rem;
+  display: flex; justify-content: space-between; align-items: center;
+  border-bottom: 2px solid #00d4ff;
+}
+header h1 { margin: 0; font-size: 1.4rem; }
+header h1 a { color: #00d4ff; text-decoration: none; }
+nav a { color: #aaa; text-decoration: none; margin-left: 1rem; }
+nav a:hover { color: #fff; }
+main { padding: 1rem 2rem; max-width: 1200px; margin: 0 auto; }
+footer { text-align: center; padding: 2rem; color: #666; font-size: 0.85rem; }
+
+section { margin-bottom: 2rem; }
+h2 { color: #00d4ff; border-bottom: 1px solid #333; padding-bottom: 0.3rem; }
+h3 { color: #aad; }
+h4 { margin: 0 0 0.3rem 0; }
+
+a { color: #00d4ff; }
+
+button {
+  background: #00d4ff; color: #0f0f1e; border: none;
+  padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer;
+  font-weight: bold; margin-right: 0.3rem;
+}
+button:hover { background: #00a0cc; }
+button:disabled { background: #555; cursor: not-allowed; }
+
+input[type="text"] {
+  background: #0f0f1e; color: #e0e0e0; border: 1px solid #333;
+  padding: 0.4rem; border-radius: 4px; font-family: inherit;
+}
+
+fieldset { border: 1px solid #333; padding: 0.5rem 1rem; margin: 0.5rem 0; }
+legend { color: #aaa; padding: 0 0.5rem; }
+
+pre {
+  background: #0a0a1a; color: #b0b0b0;
+  padding: 0.5rem 1rem; border-radius: 4px;
+  font-family: "SF Mono", Menlo, monospace; font-size: 0.85rem;
+  max-height: 400px; overflow-y: auto; white-space: pre-wrap;
+}
+
+.log-info { color: #b0b0b0; }
+.log-warning { color: #ffaa44; }
+.log-success { color: #44ff88; }
+
+.status-running { color: #00d4ff; }
+.status-done { color: #44ff88; }
+.status-failed { color: #ff4444; }
+.status-flushed { color: #aa44ff; }
+
+#cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1rem; }
+.card {
+  background: #0f0f1e; border: 1px solid #333; border-radius: 6px;
+  padding: 1rem; transition: border-color 0.2s;
+}
+.card:hover { border-color: #00d4ff; }
+.card .year { color: #888; font-weight: normal; font-size: 0.9em; }
+.card .meta { color: #aad; font-size: 0.9em; margin: 0.2rem 0; }
+.card .reasons { color: #888; font-size: 0.85em; margin: 0.3rem 0; }
+.card .source { color: #666; font-size: 0.8em; font-style: italic; }
+.card .actions { margin-top: 0.7rem; }
+.card .decision { font-size: 0.85em; margin: 0.3rem 0 0 0; }
+.decision-accept { color: #44ff88; }
+.decision-refuse { color: #ffaa44; }
+.decision-blacklist { color: #ff6666; }
+
+table { width: 100%; border-collapse: collapse; }
+td, th { padding: 0.5rem; text-align: left; border-bottom: 1px solid #333; }

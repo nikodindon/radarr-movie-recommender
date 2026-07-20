@@ -144,7 +144,10 @@ parser.add_argument("--mood",          type=str,   default=None,
 parser.add_argument("--like",          type=str,   default=None,
     help="Get recommendations based on a specific film (even if not in your library)")
 parser.add_argument("--resetblacklist", action="store_true",
-    help="Reset the blacklist file")
+    help="Reset the blacklist to empty")
+parser.add_argument("--web", action="store_true",
+    help="Launch the web UI (FastAPI server on 127.0.0.1:8080) instead "
+         "of running a recommendation in the terminal. Vague 5.")
 parser.add_argument("--saga",          type=str,   default=None, nargs="?", const="__auto__",
     help="Complete saga films. Use alone for auto-detection or specify a saga name")
 parser.add_argument("--director",      type=str,   default=None,
@@ -1993,6 +1996,15 @@ def print_report(results, added):
 # MAIN
 # =========================
 def main():
+    # Vague 5: --web launches the FastAPI server directly. This is a
+    # separate entry point from main(); main() is called per-run from
+    # the web runner (in a thread), not from --web.
+    if getattr(args, "web", False):
+        from radarr_reco.web.server import main as web_main
+        web_main()
+        # web_main() blocks (uvicorn.run). We never reach here unless
+        # the server is killed.
+        return
     radarr = get_radarr_movies()
     if not radarr:
         log("Cannot reach Radarr.", "ERROR")

@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}All runs{% endblock %}
+{% block content %}
+<h2>All runs</h2>
+{% if runs %}
+<table>
+  <tr><th>Run ID</th><th>Mode</th><th>Status</th><th>Started</th><th>Candidates</th></tr>
+  {% for r in runs|reverse %}
+  <tr>
+    <td><a href="/run/{{ r.run_id }}">{{ r.run_id }}</a></td>
+    <td>{{ r.mode }}</td>
+    <td class="status-{{ r.status }}">{{ r.status }}</td>
+    <td>{{ r.started_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+    <td>{{ r.candidates|length }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p>No runs yet. <a href="/">Start one →</a></p>
+{% endif %}
+{% endblock %}
