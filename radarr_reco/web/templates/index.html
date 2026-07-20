@@ -22,6 +22,43 @@
         <input type="text" name="like_title" placeholder="e.g. Inception" size="50">
       </label>
     </div>
+    <details>
+      <summary>⚙ Recherche avancée</summary>
+      <p class="hint">Filtres optionnels. Remplis ce qui t'intéresse, laisse le reste vide.
+        Si tu remplis plusieurs modes (par ex. director + actor), seul le premier matchant est utilisé.</p>
+      <div class="advanced-grid">
+        <label>Style/Genre (comma-separated):<br>
+          <input type="text" name="genre" placeholder="Comedy, Sci-Fi, Horror" size="30">
+        </label>
+        <label>IMDb min rating:<br>
+          <input type="number" name="imdb_min" placeholder="7.5" min="0" max="10" step="0.1" size="6">
+        </label>
+        <label>Start date (year, e.g. 2010):<br>
+          <input type="number" name="sd" placeholder="2010" min="1900" max="2030" size="6">
+        </label>
+        <label>End date (year, e.g. 2024):<br>
+          <input type="number" name="fd" placeholder="2024" min="1900" max="2030" size="6">
+        </label>
+        <label>Saga (franchise name, blank = auto-detect):<br>
+          <input type="text" name="saga" placeholder="Star Wars, Marvel, ..." size="30">
+        </label>
+        <label>Director (any film by):<br>
+          <input type="text" name="director" placeholder="Christopher Nolan" size="30">
+        </label>
+        <label>Actors (comma-separated, any of them):<br>
+          <input type="text" name="actor" placeholder="Pacino, De Niro" size="30">
+        </label>
+        <label>Cast (ALL must appear together):<br>
+          <input type="text" name="cast" placeholder="Stiller, Wilson" size="30">
+        </label>
+        <label>Composer (scored by):<br>
+          <input type="text" name="composer" placeholder="Hans Zimmer" size="30">
+        </label>
+        <label>Author (book adaptations):<br>
+          <input type="text" name="author" placeholder="Stephen King" size="30">
+        </label>
+      </div>
+    </details>
     <button type="submit">Start run</button>
   </form>
 </section>

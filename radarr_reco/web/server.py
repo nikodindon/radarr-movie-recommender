@@ -47,6 +47,20 @@ async def start_run(
     mode: str = Form("library"),
     mood: str = Form(""),
     like_title: str = Form(""),
+    # V5.9: advanced filters from the "Recherche avancée" panel.
+    # All optional. Empty string = not set. The runner forwards
+    # them into newmovies.args before main() runs, so the same
+    # dispatch logic in main() decides what to do.
+    genre: str = Form(""),
+    imdb_min: str = Form(""),
+    sd: str = Form(""),
+    fd: str = Form(""),
+    saga: str = Form(""),
+    director: str = Form(""),
+    actor: str = Form(""),
+    cast: str = Form(""),
+    composer: str = Form(""),
+    author: str = Form(""),
 ):
     """Démarre un run en background et redirige vers la page de run."""
     if mode not in ("library", "mood", "like"):
@@ -58,8 +72,25 @@ async def start_run(
     state.ui_options["show_posters"] = True
     state.ui_options["show_synopsis"] = True
     state.ui_options["show_credits"] = True
+    # Coerce numeric fields (Form() always returns str, even for <input type=number>).
+    def _int(v, default=None):
+        try: return int(v) if v else default
+        except (TypeError, ValueError): return default
+    def _float(v, default=None):
+        try: return float(v) if v else default
+        except (TypeError, ValueError): return default
     params = {
         "mood": mood, "like": like_title,
+        "genre": genre,
+        "imdb_min": _float(imdb_min),
+        "sd": _int(sd),
+        "fd": _int(fd),
+        "saga": saga,
+        "director": director,
+        "actor": actor,
+        "cast": cast,
+        "composer": composer,
+        "author": author,
     }
     runner.run_in_thread(state, params)
     return JSONResponse({"run_id": state.run_id, "redirect": f"/run/{state.run_id}"})

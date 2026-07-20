@@ -112,3 +112,30 @@ pre {
 
 table { width: 100%; border-collapse: collapse; }
 td, th { padding: 0.5rem; text-align: left; border-bottom: 1px solid #333; }
+
+/* V5.9: advanced search panel (collapsed by default). */
+details { margin: 1rem 0; }
+details summary {
+  cursor: pointer; padding: 0.5rem 0;
+  color: #00d4ff; font-weight: bold;
+  list-style: none;
+}
+details summary::-webkit-details-marker { display: none; }
+details summary::before {
+  content: "⚙ "; margin-right: 0.3rem;
+}
+details[open] summary::before { content: "▼ "; }
+.advanced-grid {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 0.6rem 1rem; margin: 0.8rem 0;
+  padding: 0.8rem; background: #0f0f1e;
+  border: 1px solid #333; border-radius: 4px;
+}
+.advanced-grid label { font-size: 0.9rem; }
+.advanced-grid input {
+  background: #1a1a2e; color: #e0e0e0;
+  border: 1px solid #333; border-radius: 3px;
+  padding: 0.3rem 0.5rem; margin-top: 0.2rem;
+  width: 100%;
+}
+.advanced-grid input:focus { outline: 1px solid #00d4ff; }

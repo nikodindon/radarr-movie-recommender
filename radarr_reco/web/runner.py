@@ -265,6 +265,32 @@ def run_library(start_params: dict, state: RunState) -> bool:
     if like:
         newmovies.args.like = like
 
+    # V5.9: forward the advanced filters too. All are optional.
+    # Only set the arg if the form has a non-empty value, so main()'s
+    # `if args.mood` / `if args.director` checks see the real intent.
+    # Numeric fields (imdb_min, sd, fd) come pre-coerced by the server.
+    _adv = start_params or {}
+    if _adv.get("genre"):
+        newmovies.args.genre = _adv["genre"]
+    if _adv.get("imdb_min") is not None:
+        newmovies.args.imdb_min = _adv["imdb_min"]
+    if _adv.get("sd") is not None:
+        newmovies.args.sd = _adv["sd"]
+    if _adv.get("fd") is not None:
+        newmovies.args.fd = _adv["fd"]
+    if _adv.get("saga"):
+        newmovies.args.saga = _adv["saga"]
+    if _adv.get("director"):
+        newmovies.args.director = _adv["director"]
+    if _adv.get("actor"):
+        newmovies.args.actor = _adv["actor"]
+    if _adv.get("cast"):
+        newmovies.args.cast = _adv["cast"]
+    if _adv.get("composer"):
+        newmovies.args.composer = _adv["composer"]
+    if _adv.get("author"):
+        newmovies.args.author = _adv["author"]
+
     state.append_log("info", f"Run started: mode={state.mode} at {state.started_at.isoformat()}")
     state.append_log("info", "Web runner: dry_run=True, auto=False, candidates will be collected for UI")
 
