@@ -296,6 +296,9 @@ class LLMBackend(ABC):
             "- List in chronological release order",
             "- Use EXACT English theatrical release title",
             "- Each entry must be ONLY the film title, nothing else",
+            # V5.21: count rule. Helps the model not skip famous films
+            # (e.g. for "kevin james" it forgot Paul Blart: Mall Cop).
+            f"- If the person has N films matching the role, output EXACTLY N entries",
             "",
             'Respond ONLY with this exact JSON (no other text):',
             '{"films": ["Title 1", "Title 2", "Title 3"]}',
