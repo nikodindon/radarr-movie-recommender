@@ -56,6 +56,12 @@ def _load_config():
         }
     env_file = base / ".env"
     if env_file.exists():
+        # The .env parser is a simple KEY=VALUE one (no shell quoting,
+        # no $VAR expansion). All supported variables are loaded
+        # into os.environ via setdefault — anything already set in
+        # the real env wins. This covers V1-V5 variables (OMDB,
+        # Radarr, quality profile) and V5.4+ ones (web host/port,
+        # LLM backend/model/base_url).
         for line in env_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
@@ -406,6 +412,13 @@ if not test_omdb_key(CURRENT_OMDB_KEY):
 def _build_llm_backend():
     """Construit le backend LLM selon config.yaml (llm_backend: llamacpp|ollama).
        Lit aussi les paramètres additionnels (llamacpp_base_url, etc.).
+
+       V5.30: resolution order is YAML > os.environ > default. The
+       .env file is loaded as os.environ.setdefault at startup
+       (see _load_config above), so any LLM_BACKEND/LLM_MODEL/
+       LLAMACPP_BASE_URL in .env is automatically picked up here.
+       Command-line env vars (RADARR_RECO_LLM_*) take precedence
+       over .env because they hit the real env, not setdefault.
     """
     if not LLM_BACKEND_AVAILABLE:
         return None
@@ -419,9 +432,15 @@ def _build_llm_backend():
         except Exception:
             pass
     backend_cfg = {
-        "llm_backend":       cfg.get("llm_backend", "ollama"),
-        "llm_model":         cfg.get("llm_model") or cfg.get("ollama_model", OLLAMA_MODEL),
-        "llamacpp_base_url": cfg.get("llamacpp_base_url", "http://localhost:8080"),
+        # Priority: YAML value > os.environ value > default
+        "llm_backend":       (cfg.get("llm_backend")
+                               or os.environ.get("LLM_BACKEND", "ollama")),
+        "llm_model":         (cfg.get("llm_model")
+                               or cfg.get("ollama_model")
+                               or os.environ.get("LLM_MODEL")
+                               or OLLAMA_MODEL),
+        "llamacpp_base_url": (cfg.get("llamacpp_base_url")
+                               or os.environ.get("LLAMACPP_BASE_URL", "http://localhost:8080")),
         "no_timeout":        getattr(args, "no_timeout", False),
     }
     try:
