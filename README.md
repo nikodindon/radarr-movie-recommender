@@ -273,7 +273,7 @@ via `config.yaml` → `llm_backend`:
 ```yaml
 llm_backend: llamacpp
 llm_model: /path/to/your-model.gguf    # exactly as /v1/models lists it
-llamacpp_base_url: http://192.168.1.32:8080
+llamacpp_base_url: http://your-llama-server-host:8080
 ```
 
 Launch llama-server like this (the embeddings flag is optional, only needed
@@ -334,11 +334,11 @@ CLI, the web deps sit unused but cost ~30 MB of disk.
 ```yaml
 # OMDb API keys (free at https://www.omdbapi.com/apikey.aspx, 1000 req/day each)
 # You can list multiple keys — they're rotated when one hits the rate limit.
-omdb_keys: a3421245,7cb5ef5e,7af0a4d6
+omdb_keys: your_omdb_key_1,your_omdb_key_2,your_omdb_key_3
 
 # Radarr settings (find API key in Radarr → Settings → General)
-radarr_api_key: cfbaf16133ca49a08aef6d987a835490
-radarr_url: http://80.190.83.8:7878/api/v3
+radarr_api_key: your_radarr_api_key_here
+radarr_url: http://your-radarr-host:7878/api/v3
 root_folder: /movies
 
 # Quality profile (Radarr → Settings → Profiles → ID column)
@@ -349,29 +349,34 @@ minimum_availability: announced
 
 # LLM backend: 'ollama' or 'llamacpp' (llamacpp recommended for llama-server users)
 llm_backend: llamacpp
-llm_model: /home/niko/models/ornith-aeon-35b-MTP-Q3_K_M.gguf
-llamacpp_base_url: http://192.168.1.32:8080
+llm_model: /path/to/your-model.gguf
+llamacpp_base_url: http://your-llama-server-host:8080
 
 # Web UI (only used with --web). On dev branch, also configurable via
 # --web-host, --web-port flags or RADARR_RECO_WEB_HOST/PORT env vars.
 web:
-  host: 0.0.0.0
+  host: 127.0.0.1
   port: 8765
 ```
+
+> ⚠️ **NEVER commit your real config.yaml** with your actual API keys.
+> The file is in `.gitignore` for this reason. Use `config.yaml.example`
+> as a template, and keep your real `config.yaml` private.
+> The README and `config.yaml.example` use placeholders only.
 
 **Field reference:**
 
 | Field | Required | Example | Notes |
 |---|---|---|---|
 | `omdb_keys` | yes | `key1,key2,key3` | Comma-separated. Get free keys at omdbapi.com. Multiple keys rotate when one hits the rate limit |
-| `radarr_api_key` | yes | `cfbaf161...` | Radarr → Settings → General → API Key |
-| `radarr_url` | yes | `http://80.190.83.8:7878/api/v3` | Include `/api/v3` suffix, no trailing slash |
+| `radarr_api_key` | yes | `your_radarr_api_key...` | Radarr → Settings → General → API Key |
+| `radarr_url` | yes | `http://your-radarr-host:7878/api/v3` | Include `/api/v3` suffix, no trailing slash |
 | `root_folder` | yes | `/movies` or `D:\Movies` | The path Radarr uses for new films (Radarr → Settings → Media Management → Root Folders) |
 | `quality_profile_id` | yes | `6` | Radarr → Settings → Profiles → ID column |
 | `minimum_availability` | yes | `announced` / `inCinemas` / `released` | When Radarr starts searching for the film |
 | `llm_backend` | yes | `llamacpp` or `ollama` | `llamacpp` for direct GGUF, `ollama` for the Ollama runtime |
 | `llm_model` | yes | `/path/to/model.gguf` or `llama3.1:8b` | For llamacpp: full path to the GGUF. For ollama: the model name |
-| `llamacpp_base_url` | if llamacpp | `http://192.168.1.32:8080` | The URL of your llama-server (must expose `/v1/chat/completions` and `/v1/embeddings` for plot-similarity) |
+| `llamacpp_base_url` | if llamacpp | `http://your-llama-server-host:8080` | The URL of your llama-server (must expose `/v1/chat/completions` and `/v1/embeddings` for plot-similarity) |
 | `ollama_model` | if ollama | `llama3.1:8b` | Same as `llm_model` for the ollama backend (kept for back-compat) |
 | `web.host` | no | `0.0.0.0` or `127.0.0.1` | Bind address for the web UI. Default `127.0.0.1` (localhost only). Use `0.0.0.0` to expose on LAN — no auth, trusted networks only |
 | `web.port` | no | `8765` | Port for the web UI. Default `8080`. Pick something else if 8080 is taken (e.g. by llama-server) |
