@@ -30,9 +30,22 @@ quality_profile_id: 6
 # Options: announced, inCinemas, released, tba
 minimum_availability: announced
 
-# Ollama model to use for suggestions and embeddings
-# Run "ollama pull llama3.1:8b" to download
-ollama_model: llama3.1:8b
+# LLM backend: 'ollama' (default) or 'llamacpp' (OpenAI-compat /v1 endpoint)
+# 'llamacpp' is recommended for users already running llama-server with GGUF.
+# Run "ollama pull llama3.1:8b" first if you use 'ollama'.
+llm_backend: llamacpp
+
+# Path to the GGUF model (llamacpp) or the model name (ollama)
+llm_model: /path/to/your-model.gguf
+
+# URL of the llama-server (only used when llm_backend: llamacpp)
+# Must expose /v1/chat/completions. Add --embeddings to llama-server
+# for plot-similarity scoring.
+llamacpp_base_url: http://your-llama-server-host:8080
+
+# Legacy back-compat: if you use ollama, you can still set this instead
+# of llm_model. Kept so older configs keep working.
+# ollama_model: llama3.1:8b
 
 # --------------------------------------------------------------------
 # Web UI (Vague 5) - only used when you run `python newmovies.py --web`
