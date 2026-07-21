@@ -34,6 +34,31 @@ Your collection grows by itself , every morning if you want, 10 new films picked
 
 ---
 
+## What's new in the `dev` branch (V5.5 → V5.29)
+
+The `dev` branch has 30+ improvements on top of `main` (last stable V5.0). Highlights:
+
+- 🌐 **Web UI** (V5.5) — review recommendations in a browser, click Accept/Refuse/Blacklist, push in batch
+- 🆕 **Interactive onboarding** (V5.25–V5.29) — `--onboard` for new Radarr libraries: 8 QCM + free-form answer → 21 personalised film suggestions
+- 🔍 **OMDb search fallback** (V5.22) — `--omdb-fallback` fills gaps when the LLM forgets famous films (e.g. Paul Blart for Kevin James)
+- 🎯 **Better role matching** (V5.18, V5.20) — actor/director/saga modes now verify the role actually matches before suggesting a film
+- 🔧 **Cumulative filters** (V5.10–V5.14) — `--imdb-min`, `--sd`, `--fd`, `--genre` now work in **all** modes (saga, artist, mood, like)
+- 🛡️ **State leak fix** (V5.23) — running a mood then a saga no longer carries the previous mood into the new run
+
+To install the dev branch:
+
+```bash
+git clone -b dev https://github.com/nikodindon/radarr-movie-recommender.git
+cd radarr-movie-recommender
+pip install -r requirements.txt
+cp config.yaml.example config.yaml
+# Edit config.yaml with your settings (see Installation section below)
+```
+
+`main` is still the last "stable" snapshot; `dev` is the bleeding edge with the new features.
+
+---
+
 ## Previews
 
 **Classic mode** — recommendations based on your library:
@@ -84,9 +109,9 @@ and I'll flip the default.
 |---|---|---|
 | `--web` | off | Launch the web UI on the host (server blocks until killed) |
 | `--web-port` | env `RADARR_RECO_WEB_PORT` or 8080 | Bind port — set this if 8080 is already taken (e.g. by llama-server) |
+| `--web-host` | env `RADARR_RECO_WEB_HOST` or 127.0.0.1 | Bind address — set to `0.0.0.0` to expose on the LAN (no auth, trusted networks only) |
 
-The env var `RADARR_RECO_WEB_PORT` is still respected (flag wins over
-env). Binds to `127.0.0.1` only — no auth, no external exposure.
+Resolution order: `--web-*` flag > `RADARR_RECO_WEB_*` env var > `config.yaml` `web:` section > default.
 
 ### How it works (one paragraph)
 
@@ -305,16 +330,51 @@ The web UI deps are also installed by `pip install -r requirements.txt`,
 so you don't have to install them separately. If you only ever use the
 CLI, the web deps sit unused but cost ~30 MB of disk.
 
-**config.yaml:**
+**config.yaml:** (`cp config.yaml.example config.yaml` and edit)
 ```yaml
-omdb_keys: your_key1,your_key2
-radarr_api_key: your_radarr_api_key
-radarr_url: http://localhost:7878/api/v3
-root_folder: "D:\\Movies"
-ollama_model: llama3.1:8b
+# OMDb API keys (free at https://www.omdbapi.com/apikey.aspx, 1000 req/day each)
+# You can list multiple keys — they're rotated when one hits the rate limit.
+omdb_keys: a3421245,7cb5ef5e,7af0a4d6
+
+# Radarr settings (find API key in Radarr → Settings → General)
+radarr_api_key: cfbaf16133ca49a08aef6d987a835490
+radarr_url: http://80.190.83.8:7878/api/v3
+root_folder: /movies
+
+# Quality profile (Radarr → Settings → Profiles → ID column)
 quality_profile_id: 6
+
+# When Radarr starts searching for the film
 minimum_availability: announced
+
+# LLM backend: 'ollama' or 'llamacpp' (llamacpp recommended for llama-server users)
+llm_backend: llamacpp
+llm_model: /home/niko/models/ornith-aeon-35b-MTP-Q3_K_M.gguf
+llamacpp_base_url: http://192.168.1.32:8080
+
+# Web UI (only used with --web). On dev branch, also configurable via
+# --web-host, --web-port flags or RADARR_RECO_WEB_HOST/PORT env vars.
+web:
+  host: 0.0.0.0
+  port: 8765
 ```
+
+**Field reference:**
+
+| Field | Required | Example | Notes |
+|---|---|---|---|
+| `omdb_keys` | yes | `key1,key2,key3` | Comma-separated. Get free keys at omdbapi.com. Multiple keys rotate when one hits the rate limit |
+| `radarr_api_key` | yes | `cfbaf161...` | Radarr → Settings → General → API Key |
+| `radarr_url` | yes | `http://80.190.83.8:7878/api/v3` | Include `/api/v3` suffix, no trailing slash |
+| `root_folder` | yes | `/movies` or `D:\Movies` | The path Radarr uses for new films (Radarr → Settings → Media Management → Root Folders) |
+| `quality_profile_id` | yes | `6` | Radarr → Settings → Profiles → ID column |
+| `minimum_availability` | yes | `announced` / `inCinemas` / `released` | When Radarr starts searching for the film |
+| `llm_backend` | yes | `llamacpp` or `ollama` | `llamacpp` for direct GGUF, `ollama` for the Ollama runtime |
+| `llm_model` | yes | `/path/to/model.gguf` or `llama3.1:8b` | For llamacpp: full path to the GGUF. For ollama: the model name |
+| `llamacpp_base_url` | if llamacpp | `http://192.168.1.32:8080` | The URL of your llama-server (must expose `/v1/chat/completions` and `/v1/embeddings` for plot-similarity) |
+| `ollama_model` | if ollama | `llama3.1:8b` | Same as `llm_model` for the ollama backend (kept for back-compat) |
+| `web.host` | no | `0.0.0.0` or `127.0.0.1` | Bind address for the web UI. Default `127.0.0.1` (localhost only). Use `0.0.0.0` to expose on LAN — no auth, trusted networks only |
+| `web.port` | no | `8765` | Port for the web UI. Default `8080`. Pick something else if 8080 is taken (e.g. by llama-server) |
 
 ---
 
@@ -371,7 +431,28 @@ python newmovies.py --limit 3                 # add at most 3 films this run
 
 # Web UI
 python newmovies.py --web --web-port 8765     # see [Web UI section](#web-ui-review-recommendations-in-your-browser)
+python newmovies.py --web --web-host 0.0.0.0  # expose on the LAN (no auth, trusted networks only)
+
+# Onboarding (new Radarr libraries) — dev branch only
+python newmovies.py --onboard                 # 8 QCM + free-form answer, 21 film suggestions
+python newmovies.py --onboard --auto          # auto-add all suggestions (no y/N/q per film)
+
+# OMDb fallback (artist modes) — dev branch
+python newmovies.py --actor "Kevin James" --omdb-fallback  # also search OMDb to fill LLM gaps
 ```
+
+---
+
+## Dev branch flags (V5.5+)
+
+These flags are only available on the `dev` branch:
+
+| Flag | Modes | Description |
+|---|---|---|
+| `--omdb-fallback` | actor, cast, director, composer, author | After the LLM returns, also query OMDb search for the person to find missing films (e.g. when the LLM forgets Paul Blart for Kevin James) |
+| `--web-host` | web | Bind address for the web UI (default `127.0.0.1`, set to `0.0.0.0` for LAN exposure) |
+
+`--onboard`, `--web-host`, `--omdb-fallback` are all reachable from the Web UI's "Recherche avancée" panel — just click the toggle.
 
 ---
 
@@ -412,6 +493,9 @@ python newmovies.py --web --web-port 8765     # see [Web UI section](#web-ui-rev
 | `--yes` | off | Skip the `--resetblacklist` confirmation prompt |
 | `--web` | off | Launch the web UI (see [Web UI section](#web-ui-review-recommendations-in-your-browser)) |
 | `--web-port` | env or 8080 | Port for `--web` (use this if 8080 is taken) |
+| `--web-host` | env or 127.0.0.1 | Bind address for `--web` (use `0.0.0.0` to expose on LAN, no auth) |
+| `--onboard` | off | **(dev only)** Interactive onboarding: 8 QCM + free-form answer, 21 film suggestions to kickstart a new library |
+| `--omdb-fallback` | off | **(dev only)** Artist modes only: query OMDb search after the LLM to fill gaps (e.g. when LLM forgets famous titles) |
 
 ---
 
