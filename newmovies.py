@@ -193,6 +193,13 @@ parser.add_argument("--export",        type=str,   default=None,
 # (e.g. Paul Blart: Mall Cop for Kevin James).
 parser.add_argument("--omdb-fallback", action="store_true",
     help="(artist modes) after the LLM returns, query OMDb search to find any missing films by the person")
+# V5.25: interactive onboarding. For new Radarr libraries: ask the
+# user a few questions about their taste, then propose 2 films
+# per genre (Action, Comedy, Drama, Sci-Fi, Horror, Romance,
+# Thriller) to kickstart the collection. CLI-only for now; the
+# web UI version will be a separate piece.
+parser.add_argument("--onboard", action="store_true",
+    help="(CLI) interactive onboarding for new Radarr libraries. Asks a few taste questions then proposes 2 films per genre to add.")
 args = parser.parse_args()
 
 # =========================
@@ -2154,6 +2161,212 @@ def print_report(results, added):
         f"tested:{tested} rejected:{rejected} selected:{RUN_STATS['selected']}")
 
 # =========================
+# ONBOARD (V5.25)
+# =========================
+
+# Genres we propose during onboarding. Classic, well-known
+# genres that everyone can relate to. 2 films per genre, so
+# 14 films total = a reasonable starter collection.
+_ONBOARD_GENRES = [
+    "Action", "Comedy", "Drama", "Sci-Fi",
+    "Horror", "Romance", "Thriller",
+]
+
+# Onboarding questionnaire. 8 questions, mostly closed-form
+# (a/b/c) so the LLM gets a structured taste profile.
+_ONBOARD_QUESTIONS = [
+    ("decade", "Which decade of cinema speaks to you most?",
+     ["1970s-1980s (classic)", "1990s (grunge/indie era)", "2000s (modern blockbusters)", "2010s-now (recent streaming era)"]),
+    ("pace",    "What pace do you prefer?",
+     ["Slow burn / contemplative", "Balanced", "Fast-paced / action-heavy"]),
+    ("tone",    "What tone do you enjoy?",
+     ["Dark and serious", "Mixed / it depends", "Light and uplifting"]),
+    ("realism", "Realistic or fantastical?",
+     ["Grounded in reality", "Mix of both", "Escapist / fantastical"]),
+    ("origin",  "Hollywood or international?",
+     ["Mostly Hollywood", "Mix of both", "Mostly international / foreign"]),
+    ("novelty", "Do you like experimental / unconventional films?",
+     ["Yes, I love surprises", "Sometimes", "No, I prefer accessible / mainstream"]),
+    ("classic", "How do you feel about black-and-white / very old films?",
+     ["Love them", "Open to it", "Prefer modern colour"]),
+    ("series",  "How do you feel about franchises / series?",
+     ["Love them, bring on the sequels", "Mix", "Standalone films only"]),
+]
+
+
+def _ask_onboard_question(idx: int, total: int, label: str, text: str, choices: list) -> str:
+    """Print a single onboarding question and read the answer.
+    Returns the chosen answer text (the LLM uses it to build the prompt).
+    """
+    cprint(f"\\n[{idx + 1}/{total}] {text}", "white", bold=True)
+    for i, choice in enumerate(choices, 1):
+        cprint(f"  {i}) {choice}", "cyan")
+    while True:
+        try:
+            raw = input(f"Your choice [1-{len(choices)}] (or 'q' to quit): ").strip()
+        except EOFError:
+            return choices[0]  # non-interactive: default to first
+        if raw.lower() == "q":
+            raise KeyboardInterrupt("User quit during onboarding")
+        try:
+            n = int(raw)
+            if 1 <= n <= len(choices):
+                return choices[n - 1]
+        except ValueError:
+            pass
+        cprint(f"  Please enter a number between 1 and {len(choices)}", "red")
+
+
+def run_onboard(radarr_titles: set, radarr_tmdb: set) -> None:
+    """V5.25: interactive onboarding for a new/empty Radarr library.
+
+    Asks the user 8 taste questions, builds a structured taste
+    profile, and asks the LLM to recommend 2 films per genre
+    (14 total) from a fixed genre list. Each film is validated
+    via OMDb, and the user is prompted to add or skip each one.
+    """
+    if not OLLAMA_OK or LLM is None:
+        log("LLM unavailable — cannot run onboarding", "ERROR")
+        return
+    cprint("=" * 70, "white", bold=True)
+    cprint("  RADARR ONBOARDING — let's build your starter collection", "white", bold=True)
+    cprint("=" * 70, "white", bold=True)
+    cprint(
+        f"  We'll ask {len(_ONBOARD_QUESTIONS)} quick questions about your taste,\\n"
+        f"  then recommend 2 films per genre ({len(_ONBOARD_GENRES) * 2} films total)\\n"
+        f"  to kickstart your Radarr library.\\n"
+        f"  Press Ctrl+C at any time to quit.", "gray"
+    )
+
+    # 1) Ask questions
+    answers = []
+    for i, (label, text, choices) in enumerate(_ONBOARD_QUESTIONS):
+        try:
+            ans = _ask_onboard_question(i, len(_ONBOARD_QUESTIONS), label, text, choices)
+        except KeyboardInterrupt:
+            cprint("\\n  Onboarding cancelled.", "yellow")
+            return
+        answers.append((label, ans))
+
+    # 2) Build the prompt
+    profile_lines = [f"- {label}: {ans}" for label, ans in answers]
+    profile = "\\n".join(profile_lines)
+    genres_str = ", ".join(_ONBOARD_GENRES)
+    n_per_genre = 2
+
+    cprint("\\n" + "=" * 70, "white", bold=True)
+    cprint(f"  Generating recommendations ({n_per_genre} per genre, {len(_ONBOARD_GENRES) * n_per_genre} total)...", "white", bold=True)
+    cprint("=" * 70, "white", bold=True)
+
+    # 3) Call the LLM
+    try:
+        titles = LLM.suggest_onboard(profile, genres_str, n_per_genre)
+    except AttributeError:
+        # Fallback if the backend doesn't implement suggest_onboard.
+        # Build a generic prompt and reuse suggest_from_mood.
+        generic = (
+            f"Based on this taste profile:\\n{profile}\\n\\n"
+            f"Recommend exactly {n_per_genre} films for each of these genres: {genres_str}.\\n"
+            f"Output as JSON: {{\"Action\": [\"Film1\", \"Film2\"], \"Comedy\": [...]}}"
+        )
+        try:
+            raw = LLM.chat(generic, kind="long", max_tokens=2048)
+            # Crude parse: {genre: [titles]}
+            import json as _json
+            import re as _re
+            m = _re.search(r"\\{[^{}]*\\}", raw, _re.DOTALL)
+            if not m:
+                log("Could not parse LLM output as JSON", "ERROR")
+                return
+            data = _json.loads(m.group(0))
+            titles = []
+            for genre, lst in data.items():
+                for t in lst:
+                    titles.append({"genre": genre, "title": t})
+        except Exception as e:
+            log(f"Onboard LLM error: {e}", "ERROR")
+            return
+    except Exception as e:
+        log(f"Onboard LLM error: {e}", "ERROR")
+        return
+
+    if not titles:
+        log("LLM returned no titles for onboarding", "WARNING")
+        return
+
+    cprint(f"  [{LLM.name}] {len(titles)} titles proposed", "magenta")
+
+    # 4) Validate each via OMDb + ask user to add
+    cprint("\\n" + "=" * 70, "white", bold=True)
+    cprint("  REVIEW — choose which films to add to your Radarr", "white", bold=True)
+    cprint("=" * 70, "white", bold=True)
+    print()
+    added = []
+    for entry in titles:
+        # entry may be a dict {genre, title} or a bare string (fallback)
+        if isinstance(entry, dict):
+            genre = entry.get("genre", "?")
+            title = entry.get("title", "")
+        else:
+            genre = "?"
+            title = str(entry)
+        title = _clean_title(title)
+        if not title:
+            continue
+        omdb = get_omdb_full(title)
+        if not omdb:
+            cprint(f"  [{genre:>10s}] {title:<40s} OMDb not found — skipped", "yellow")
+            continue
+        if omdb["title"] in radarr_titles or omdb["title"] in BLACKLIST:
+            cprint(f"  [{genre:>10s}] {omdb['title']:<40s} already in library — skipped", "gray")
+            continue
+        # Mini-report + prompt
+        cprint(f"  [{genre:>10s}] {omdb['title']} ({omdb['year']})  IMDb:{omdb['rating']:.1f}", "white", bold=True)
+        if omdb.get("plot"):
+            plot_short = omdb["plot"][:160] + ("..." if len(omdb["plot"]) > 160 else "")
+            cprint(f"               {plot_short}", "gray")
+        try:
+            choice = input("  Add? [y/N/q] ").strip().lower()
+        except EOFError:
+            choice = "n"
+        if choice == "q":
+            cprint("  Onboarding stopped.", "yellow")
+            break
+        if choice == "y":
+            lookup = get_radarr_lookup(omdb["title"], omdb["year"])
+            if not lookup:
+                cprint(f"               Radarr lookup failed — skipping", "yellow")
+                continue
+            if args.auto or choice == "y" and not args.dry_run:
+                if add_to_radarr({
+                    "title": omdb["title"], "year": omdb["year"],
+                    "rating": omdb["rating"], "score": omdb["rating"],
+                    "reasons": [f"onboard:{genre}"], "lookup": lookup,
+                    "source": f"onboard:{genre}",
+                }):
+                    added.append(omdb["title"])
+                    RUN_STATS["added"] += 1
+                    BLACKLIST.add(omdb["title"])
+                    cprint(f"               added to Radarr", "green")
+                else:
+                    cprint(f"               add_to_radarr failed", "red")
+            else:
+                # Dry-run: just show what would be added
+                cprint(f"               [DRY-RUN] would add to Radarr", "cyan")
+        print()
+
+    # 5) Wrap up
+    save_blacklist(BLACKLIST)
+    cprint("=" * 70, "white", bold=True)
+    cprint(f"  ONBOARDING DONE — {len(added)} film(s) added to Radarr", "white", bold=True)
+    cprint("=" * 70, "white", bold=True)
+    for t in added:
+        cprint(f"    + {t}", "green")
+    cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
+    cprint(f"  Log saved: {log_file}", "gray")
+
+
+# =========================
 # MAIN
 # =========================
 def main():
@@ -2428,6 +2641,16 @@ def main():
         cprint(f"  Blacklist updated: {len(BLACKLIST)} titles", "gray")
         cprint(f"  Log saved: {log_file}", "gray")
         return
+
+    # V5.25: interactive onboarding. Asks a few taste questions,
+    # then proposes 2 films per genre to kickstart a new Radarr
+    # library. CLI only for now; the web UI version is a separate
+    # piece. Early branch so it doesn't fall through to the
+    # library / mood flows below.
+    if args.onboard:
+        run_onboard(radarr_titles, radarr_tmdb)
+        return
+
     # ─────────────────────────────────────────────────────────────────────
 
     random.shuffle(pool)
