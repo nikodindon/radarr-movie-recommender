@@ -13,8 +13,17 @@ radarr_url: http://localhost:7878/api/v3
 root_folder: "F:\\Movies"
 
 # Quality profile ID to use when adding films to Radarr
-# Find your profile IDs in Radarr -> Settings -> Profiles
-# Common values: 1=Any, 4=HD-720p, 5=HD-1080p, 6=720p/1080p custom
+# Find your profile IDs in Radarr → Settings → Profiles. The ID is
+# in the URL when you click a profile (#profile-{id}) or shown in
+# the "Wanted" column. Defaults on a fresh Radarr install:
+#   1 = Any
+#   2 = SD (deprecated)
+#   3 = SD-720p
+#   4 = HD-720p
+#   5 = HD-1080p (or "HD-720p/1080p" depending on version)
+#   6 = Ultra-HD (4K) on newer installs, or HD-720p/1080p on older
+# Custom profiles (e.g. "Remux-1080p", "WEB-1080p") get their own
+# IDs after creation — check Settings → Profiles to see yours.
 quality_profile_id: 6
 
 # Minimum availability before Radarr starts searching
