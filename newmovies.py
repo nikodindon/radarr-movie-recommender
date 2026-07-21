@@ -2198,7 +2198,7 @@ def _ask_onboard_question(idx: int, total: int, label: str, text: str, choices: 
     """Print a single onboarding question and read the answer.
     Returns the chosen answer text (the LLM uses it to build the prompt).
     """
-    cprint(f"\\n[{idx + 1}/{total}] {text}", "white", bold=True)
+    cprint(f"\n[{idx + 1}/{total}] {text}", "white", bold=True)
     for i, choice in enumerate(choices, 1):
         cprint(f"  {i}) {choice}", "cyan")
     while True:
@@ -2232,9 +2232,9 @@ def run_onboard(radarr_titles: set, radarr_tmdb: set) -> None:
     cprint("  RADARR ONBOARDING — let's build your starter collection", "white", bold=True)
     cprint("=" * 70, "white", bold=True)
     cprint(
-        f"  We'll ask {len(_ONBOARD_QUESTIONS)} quick questions about your taste,\\n"
-        f"  then recommend 2 films per genre ({len(_ONBOARD_GENRES) * 2} films total)\\n"
-        f"  to kickstart your Radarr library.\\n"
+        f"  We'll ask {len(_ONBOARD_QUESTIONS)} quick questions about your taste,\n"
+        f"  then recommend 2 films per genre ({len(_ONBOARD_GENRES) * 2} films total)\n"
+        f"  to kickstart your Radarr library.\n"
         f"  Press Ctrl+C at any time to quit.", "gray"
     )
 
@@ -2244,7 +2244,7 @@ def run_onboard(radarr_titles: set, radarr_tmdb: set) -> None:
         try:
             ans = _ask_onboard_question(i, len(_ONBOARD_QUESTIONS), label, text, choices)
         except KeyboardInterrupt:
-            cprint("\\n  Onboarding cancelled.", "yellow")
+            cprint("\n  Onboarding cancelled.", "yellow")
             return
         answers.append((label, ans))
 
@@ -2254,7 +2254,7 @@ def run_onboard(radarr_titles: set, radarr_tmdb: set) -> None:
     genres_str = ", ".join(_ONBOARD_GENRES)
     n_per_genre = 2
 
-    cprint("\\n" + "=" * 70, "white", bold=True)
+    cprint("\n" + "=" * 70, "white", bold=True)
     cprint(f"  Generating recommendations ({n_per_genre} per genre, {len(_ONBOARD_GENRES) * n_per_genre} total)...", "white", bold=True)
     cprint("=" * 70, "white", bold=True)
 
@@ -2271,14 +2271,32 @@ def run_onboard(radarr_titles: set, radarr_tmdb: set) -> None:
         )
         try:
             raw = LLM.chat(generic, kind="long", max_tokens=2048)
-            # Crude parse: {genre: [titles]}
+            # V5.27: robust JSON parse. The LLM may return JSON with
+            # nested objects (escape sequences, multi-line, comments),
+            # so we use a brace-matching algorithm instead of a
+            # simple regex. The previous regex `\{[^{}]*\}` failed
+            # on any LLM output that included inner braces
+            # (e.g. nested objects) or characters between objects.
             import json as _json
-            import re as _re
-            m = _re.search(r"\\{[^{}]*\\}", raw, _re.DOTALL)
-            if not m:
-                log("Could not parse LLM output as JSON", "ERROR")
+            # Find the first { that starts a balanced object
+            obj_start = raw.find("{")
+            if obj_start == -1:
+                log("LLM output has no JSON object", "ERROR")
                 return
-            data = _json.loads(m.group(0))
+            depth = 0
+            obj_end = -1
+            for i, ch in enumerate(raw[obj_start:], start=obj_start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        obj_end = i + 1
+                        break
+            if obj_end == -1:
+                log("LLM output JSON is unbalanced", "ERROR")
+                return
+            data = _json.loads(raw[obj_start:obj_end])
             titles = []
             for genre, lst in data.items():
                 for t in lst:
@@ -2297,7 +2315,7 @@ def run_onboard(radarr_titles: set, radarr_tmdb: set) -> None:
     cprint(f"  [{LLM.name}] {len(titles)} titles proposed", "magenta")
 
     # 4) Validate each via OMDb + ask user to add
-    cprint("\\n" + "=" * 70, "white", bold=True)
+    cprint("\n" + "=" * 70, "white", bold=True)
     cprint("  REVIEW — choose which films to add to your Radarr", "white", bold=True)
     cprint("=" * 70, "white", bold=True)
     print()
