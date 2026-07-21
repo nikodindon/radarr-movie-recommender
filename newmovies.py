@@ -2252,7 +2252,39 @@ def run_onboard(radarr_titles: set, radarr_tmdb: set) -> None:
     profile_lines = [f"- {label}: {ans}" for label, ans in answers]
     profile = "\\n".join(profile_lines)
     genres_str = ", ".join(_ONBOARD_GENRES)
-    n_per_genre = 2
+    n_per_genre = 3  # V5.28: 3 films/genre (was 2) for more variety
+
+    # V5.28: free-form question. This is the strongest signal —
+    # what the user actually types about films/books/TV they
+    # like. We ask for 1-2 minutes of stream-of-consciousness,
+    # no editing, just whatever comes to mind. Empty answer is
+    # OK (we fall back to the structured QCM profile).
+    cprint("\n" + "=" * 70, "white", bold=True)
+    cprint("  ONE MORE THING — free-form", "white", bold=True)
+    cprint("=" * 70, "white", bold=True)
+    cprint(
+        "  In a minute or two, without overthinking, tell us about your\n"
+        "  favourite films, books and TV series — whatever comes to mind.\n"
+        "  This is the strongest signal we have for your taste, so be\n"
+        "  honest (Press Enter on an empty line to skip).", "gray"
+    )
+    print()
+    freeform_lines = []
+    while True:
+        try:
+            line = input("  > ")
+        except EOFError:
+            break
+        if not line.strip():
+            break
+        freeform_lines.append(line)
+        # Stop if user pressed Enter twice (empty line)
+    freeform = " ".join(freeform_lines).strip()
+
+    if freeform:
+        cprint(f"  Got {len(freeform.split())} words — thanks!", "green")
+    else:
+        cprint("  Skipped (no free-form input).", "yellow")
 
     cprint("\n" + "=" * 70, "white", bold=True)
     cprint(f"  Generating recommendations ({n_per_genre} per genre, {len(_ONBOARD_GENRES) * n_per_genre} total)...", "white", bold=True)
@@ -2264,10 +2296,18 @@ def run_onboard(radarr_titles: set, radarr_tmdb: set) -> None:
     except AttributeError:
         # Fallback if the backend doesn't implement suggest_onboard.
         # Build a generic prompt and reuse suggest_from_mood.
+        # V5.28: explicit instructions — decade is a soft hint,
+        # not a constraint; the user may like recent films even
+        # if they answered "1990s". And the free-form answer
+        # (movies/books/TV they like) is the strongest signal.
         generic = (
             f"Based on this taste profile:\\n{profile}\\n\\n"
+            f"User's own free-form mentions (most important signal):\\n"
+            f"  {freeform if freeform else '(user skipped this step)'}\\n\\n"
             f"Recommend exactly {n_per_genre} films for each of these genres: {genres_str}.\\n"
-            f"Output as JSON: {{\"Action\": [\"Film1\", \"Film2\"], \"Comedy\": [...]}}"
+            f"Decade preference is a soft hint, NOT a hard filter. If a film fits the taste "
+            f"profile but is from a different era, include it anyway.\\n"
+            f"Output as JSON: {{\"Action\": [\"Film1\", \"Film2\", \"Film3\"], \"Comedy\": [\"F1\", \"F2\", \"F3\"]}}"
         )
         try:
             raw = LLM.chat(generic, kind="long", max_tokens=2048)
