@@ -2388,6 +2388,18 @@ def main():
         # web_main() blocks (uvicorn.run). We never reach here unless
         # the server is killed.
         return
+    # V5.26: --onboard runs even if Radarr is unreachable.
+    # Onboarding is for new installs that may not have a configured
+    # library yet. We dispatch here before the Radarr health check
+    # so a transient network error doesn't block the user from
+    # using this entry point. The Radarr lookup is still done
+    # per-film inside run_onboard (skipping already-in-library
+    # films), so if Radarr comes back online later, no duplicate
+    # adds.
+    if args.onboard:
+        run_onboard(set(), set())
+        return
+
     radarr = get_radarr_movies()
     if not radarr:
         log("Cannot reach Radarr.", "ERROR")
@@ -2642,14 +2654,14 @@ def main():
         cprint(f"  Log saved: {log_file}", "gray")
         return
 
-    # V5.25: interactive onboarding. Asks a few taste questions,
-    # then proposes 2 films per genre to kickstart a new Radarr
-    # library. CLI only for now; the web UI version is a separate
-    # piece. Early branch so it doesn't fall through to the
-    # library / mood flows below.
-    if args.onboard:
-        run_onboard(radarr_titles, radarr_tmdb)
-        return
+    # V5.25: interactive onboarding. Note: the actual --onboard
+    # dispatch happens earlier in main() (right after the --web
+    # branch), so we can run it even when Radarr is unreachable.
+    # This block is kept for documentation but is effectively
+    # dead code now — it can only be reached if you somehow set
+    # args.onboard AND passed the earlier health check, which
+    # would already have run run_onboard.
+    # (Removed in V5.26; the earlier dispatch handles everything.)
 
     # ─────────────────────────────────────────────────────────────────────
 
