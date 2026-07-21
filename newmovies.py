@@ -2397,9 +2397,17 @@ def run_onboard(radarr_titles: set, radarr_tmdb: set) -> None:
                 continue
             if args.auto or choice == "y" and not args.dry_run:
                 if add_to_radarr({
-                    "title": omdb["title"], "year": omdb["year"],
-                    "rating": omdb["rating"], "score": omdb["rating"],
-                    "reasons": [f"onboard:{genre}"], "lookup": lookup,
+                    # V5.29: flatten the lookup dict. add_to_radarr
+                    # expects tmdbId / titleSlug / images at the
+                    # root (same shape as the other modes). The
+                    # raw `lookup` is the full Radarr movie dict
+                    # and we need to spread its fields.
+                    **lookup,
+                    "title": omdb["title"],
+                    "year": omdb["year"],
+                    "rating": omdb["rating"],
+                    "score": omdb["rating"],
+                    "reasons": [f"onboard:{genre}"],
                     "source": f"onboard:{genre}",
                 }):
                     added.append(omdb["title"])
