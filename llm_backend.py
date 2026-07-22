@@ -317,41 +317,129 @@ class LLMBackend(ABC):
         return parse_film_titles(raw)
 
     def analyze_collection(self, profile: dict) -> tuple:
+        # Build stats summary
         genres_str  = ", ".join(f"{g} ({c})" for g, c in profile["top_genres"])
         decades_str = ", ".join(f"{d}s ({c})" for d, c in profile["top_decades"])
-        titles_str  = "\n".join(f"- {t}" for t in profile["sample_titles"][:25])
-        prompt = "\n".join([
-            "You are an expert film curator analyzing a personal movie collection.",
-            "",
-            f"Collection size: {profile['total']} films",
-            f"Average IMDb rating: {profile['avg_rating']}",
+
+        # ── Tour 1 : brouillon (analyse + recos) ──────────────────────
+        prompt1 = "\n".join([
+            "You are a sharp, opinionated film curator. Below is a user's full",
+            "movie collection.",
+            f"Collection: {profile['total']} films "
+            f"({profile['n_unique']} unique titles), avg IMDb {profile['avg_rating']}.",
             f"Top genres: {genres_str}",
             f"Top decades: {decades_str}",
             "",
-            "Sample of films in collection:", titles_str, "",
-            "Based on this collection, write a short personalized analysis (3-4 paragraphs):",
-            "1. Describe the cinephile profile (what kind of viewer this person is)",
-            "2. Identify strengths (what is well covered)",
-            "3. Identify gaps (what important films/directors/movements are missing)",
-            "4. Suggest 3 specific directions to explore",
+            "You know every film, its director, and its place in cinema history.",
             "",
-            "Then provide exactly 10 film recommendations that fill the detected gaps.",
-            "These must be films NOT in the collection already.",
+            "USER'S COLLECTION (alphabetical, one per line):",
+            profile["titles"],
             "",
-            "IMPORTANT: You MUST respond in this EXACT two-part format, do not skip either part:",
+            "STRICT RULES (do not violate):",
+            "- Base every claim on the list above. If unsure, write 'likely' or 'possibly', never assert.",
+            "- Do not self-correct or hedge mid-sentence. Be confident and consistent.",
+            "- Geographic precision: Japan is in Asia, not Europe. Belgium is in Western Europe.",
+            "- Do not contradict yourself: if you recommend a Korean film, do not claim the user has zero Korean films.",
+            "",
+            "VOICE:",
+            "- Be specific and incisive, not flattering. Use strong adjectives and sharp contrasts.",
+            "- Quote specific films the user owns by name to anchor every claim.",
+            "- Avoid generic phrases ('great taste', 'well-rounded', 'cinephile').",
+            "- Profile the viewer's psychology, not just their filmography.",
+            "",
+            "Write a sharp, personalized analysis (4-5 paragraphs):",
+            "1. Who this viewer is — what they crave, what they avoid, what they pretend to like (1 paragraph).",
+            "2. Strengths: directors, movements, eras well-covered (cite films, no flattery).",
+            "3. Gaps by region, by director, by movement, by era — be honest about blind spots.",
+            "4. Three concrete directions, each anchored in a specific film+director+year that exemplifies the gap.",
+            "",
+            "Then 12 recommendations (films NOT in the collection) that fill those gaps.",
+            "Mix eras, regions, and difficulty levels. Avoid the most obvious IMDb Top 250 picks",
+            "unless truly warranted. Prefer films that are not in the user's collection (check the list).",
+            "",
+            "Reply in this exact format:",
             "",
             "ANALYSIS:",
-            "[write your analysis here - 3 to 4 paragraphs]",
+            "[your analysis]",
             "",
             "RECOMMENDATIONS:",
-            '{"films": ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10"]}',
-            "",
-            "The RECOMMENDATIONS section is MANDATORY. Always end your response with the JSON.",
+            '{"films": ["T1","T2","T3","T4","T5","T6","T7","T8","T9","T10","T11","T12"]}',
         ])
-        raw = self.chat(prompt, kind="long", max_tokens=4096)
+        raw1 = self.chat(prompt1, kind="long", max_tokens=12000)
+
+        # ── Tour 2 : self-verification + rewrite ──────────────────────
+        # Force a real fact-check pass: the LLM must verify each claim against
+        # the collection list, drop the recos that are already in the collection,
+        # and produce a clean, confident final version.
+        prompt2 = "\n".join([
+            "Below is a DRAFT analysis of a user's movie collection. The draft",
+            "may contain: (a) factual errors (claims about which films the user",
+            "has/hasn't), (b) recommendations that are already in the collection,",
+            "(c) stream-of-consciousness or mid-sentence self-corrections.",
+            "",
+            "Your job: do a FACT-CHECK pass, then output a CLEAN FINAL version.",
+            "",
+            "USER'S COLLECTION (alphabetical, one per line — SOURCE OF TRUTH):",
+            profile["titles"],
+            "",
+            "DRAFT TO FACT-CHECK:",
+            raw1,
+            "",
+            "STEP 1 — VERIFY each factual claim in the draft:",
+            "- For every 'you have X' or 'you lack Y' claim, SCAN the collection",
+            "  list above. If the claim is wrong, mark it. If you cannot verify,",
+            "  mark it unverifiable.",
+            "- For every recommended film, CHECK if it is in the collection list.",
+            "  If it is, mark it as 'already owned' — it MUST be replaced.",
+            "",
+            "STEP 2 — REWRITE the analysis with these corrections:",
+            "- Remove all mid-sentence self-corrections, hedges, and thinking traces.",
+            "- Replace any incorrect factual claim with a corrected one. If the",
+            "  correction would change the meaning too much, soften with 'likely'",
+            "  or 'possibly'.",
+            "- Preserve the 4-paragraph structure and the 3 concrete directions.",
+            "- For any recommendation marked 'already owned', REPLACE it with a",
+            "  different film that covers the same gap. Aim for 12 final recos.",
+            "- Do NOT add a meta-paragraph about what you changed. Do NOT show",
+            "  your fact-check notes. Just output the final, clean version.",
+            "",
+            "Reply in this exact format:",
+            "",
+            "ANALYSIS:",
+            "[clean rewritten analysis]",
+            "",
+            "RECOMMENDATIONS:",
+            '{"films": ["T1","T2","T3","T4","T5","T6","T7","T8","T9","T10","T11","T12"]}',
+        ])
+        raw2 = self.chat(prompt2, kind="long", max_tokens=12000)
+
+        # Debug: dump both passes to /tmp
+        try:
+            with open("/tmp/analyze_raw_response.txt", "w") as f:
+                f.write("=== TOUR 1 (DRAFT) ===\n")
+                f.write(raw1)
+                f.write("\n\n=== TOUR 2 (CLEAN) ===\n")
+                f.write(raw2)
+        except Exception:
+            pass
+
+        # Parse the FINAL output (tour 2)
         analysis, films = "", []
-        if "ANALYSIS:" in raw:
-            parts = raw.split("RECOMMENDATIONS:")
+        if "ANALYSIS:" in raw2:
+            parts = raw2.split("RECOMMENDATIONS:")
+            analysis = parts[0].replace("ANALYSIS:", "").strip()
+            if len(parts) > 1:
+                rec_part = parts[1].strip()
+                m = re.search(r'"films"\s*:\s*\[([^\]]+)\]', rec_part, re.DOTALL)
+                if m:
+                    try:
+                        items = re.findall(r'"([^"]{2,80})"', m.group(0))
+                        films = [i for i in items if i != "films"]
+                    except Exception:
+                        pass
+        # Fallback: if tour 2 produced no parseable output, use tour 1
+        if not analysis and "ANALYSIS:" in raw1:
+            parts = raw1.split("RECOMMENDATIONS:")
             analysis = parts[0].replace("ANALYSIS:", "").strip()
             if len(parts) > 1:
                 rec_part = parts[1].strip()
