@@ -1671,35 +1671,49 @@ def run_watchlist(filepath: str, radarr_titles: set, radarr_tmdb: set):
 # ANALYZE
 # =========================
 def build_collection_profile(radarr: list) -> dict:
-    """Build statistical profile of the collection."""
-    genre_count   = {}
-    decade_count  = {}
-    director_count = {}
+    """Build full profile of the collection: stats + unique titles list."""
+    from collections import defaultdict
+    genre_count   = defaultdict(int)
+    decade_count  = defaultdict(int)
     ratings       = []
+    seen_titles   = set()
+    unique_titles = []
     total         = len(radarr)
 
     for m in radarr:
-        for g in m.get("genres", []):
-            genre_count[g] = genre_count.get(g, 0) + 1
-        year = m.get("year", 0)
+        title = m.get("title", "").strip()
+        if not title or title in seen_titles:
+            continue
+        seen_titles.add(title)
+        year = m.get("year", 0) or 0
+        rating = (m.get("ratings", {}).get("imdb", {}) or {}).get("value", 0) or 0
+        if rating:
+            ratings.append(rating)
+        for g in m.get("genres", []) or []:
+            genre_count[g] += 1
         if year:
             decade = (year // 10) * 10
-            decade_count[decade] = decade_count.get(decade, 0) + 1
-        rating = m.get("ratings", {}).get("value", 0)
-        if rating > 0:
-            ratings.append(rating)
+            decade_count[decade] += 1
+        # Compact: "title (year, rating)"
+        line = (f"  - {title} ({year}, IMDb {rating:.1f})" if rating
+                else f"  - {title} ({year})")
+        unique_titles.append((title, year, rating, line))
 
-    top_genres   = sorted(genre_count.items(), key=lambda x: x[1], reverse=True)[:6]
-    top_decades  = sorted(decade_count.items(), key=lambda x: x[1], reverse=True)[:4]
-    avg_rating   = round(sum(ratings) / len(ratings), 1) if ratings else 0
-    sample_titles = [m.get("title", "") for m in radarr if m.get("title")][:30]
+    # Sort alphabetically by title for a stable, scannable list
+    unique_titles.sort(key=lambda x: x[0].lower())
+    titles_full = "\n".join(t[3] for t in unique_titles)
+
+    top_genres  = sorted(genre_count.items(), key=lambda x: x[1], reverse=True)
+    top_decades = sorted(decade_count.items(), key=lambda x: x[1], reverse=True)
+    avg_rating  = round(sum(ratings) / len(ratings), 1) if ratings else 0
 
     return {
-        "total":        total,
-        "top_genres":   top_genres,
-        "top_decades":  top_decades,
-        "avg_rating":   avg_rating,
-        "sample_titles": sample_titles,
+        "total":         total,
+        "avg_rating":    avg_rating,
+        "n_unique":      len(unique_titles),
+        "titles":        titles_full,            # the full unique list
+        "top_genres":    top_genres,             # [(name, count), ...]
+        "top_decades":   top_decades,            # [(decade, count), ...]
     }
 
 
