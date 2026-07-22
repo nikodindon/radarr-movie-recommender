@@ -30,22 +30,32 @@ quality_profile_id: 6
 # Options: announced, inCinemas, released, tba
 minimum_availability: announced
 
-# LLM backend: 'ollama' (default) or 'llamacpp' (OpenAI-compat /v1 endpoint)
-# 'llamacpp' is recommended for users already running llama-server with GGUF.
-# Run "ollama pull llama3.1:8b" first if you use 'ollama'.
+# LLM backend configuration
+# Three lines: pick a backend, name the model, point at the server.
+# Two backends are supported: "llamacpp" (recommended, local OpenAI-compat
+# server) and "ollama" (older, kept for compatibility).
+#
+# llamacpp (recommended):
+#   - Run llama-server with a GGUF model: e.g.
+#       llama-server -m /path/to/model.gguf --host 0.0.0.0 --port 8080
+#   - Then set the 3 lines below to match.
+#   - The "no_timeout" mode (--no-timeout flag) is recommended for 30B+ models
+#     since prefill + 4k-token response can exceed the 5-minute default.
+#
+# ollama (legacy):
+#   - Run "ollama serve" then "ollama pull llama3.1:8b"
+#   - Comment out the llamacpp_* lines and uncomment ollama_model.
+#
+# Examples (uncomment the one you use):
+
+# --- llamacpp (recommended) ---
 llm_backend: llamacpp
-
-# Path to the GGUF model (llamacpp) or the model name (ollama)
 llm_model: /path/to/your-model.gguf
+llamacpp_base_url: http://localhost:8080
 
-# URL of the llama-server (only used when llm_backend: llamacpp)
-# Must expose /v1/chat/completions. Add --embeddings to llama-server
-# for plot-similarity scoring.
-llamacpp_base_url: http://your-llama-server-host:8080
-
-# Legacy back-compat: if you use ollama, you can still set this instead
-# of llm_model. Kept so older configs keep working.
-# ollama_model: llama3.1:8b
+# --- ollama (legacy) ---
+#llm_backend: ollama
+#ollama_model: llama3.1:8b
 
 # --------------------------------------------------------------------
 # Web UI (Vague 5) - only used when you run `python newmovies.py --web`
