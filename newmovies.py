@@ -568,6 +568,54 @@ def _omdb_request(params: dict, retries=2):
                 time.sleep(1.5)
     return None
 
+def _omdb_reject_fuzzy_mismatch(queried_title: str, data: dict, year: int = None) -> dict:
+    """Validate that an OMDb response actually matches our query.
+
+    OMDb does aggressive fuzzy matching. A search for "Superman: The
+    Movie" can return "Bane v Superman: The Movie" (an unrelated 2016
+    fan short). We require the returned Title to share at least one
+    significant word (length > 2, not in a stoplist) with the queried
+    title, and if a year was specified, to be within +/- 2 years of
+    that year. If the mismatch is too bad, we return {} so the caller
+    can fall back to short_title / no-year variants.
+    """
+    if not data or not isinstance(data, dict):
+        return {}
+    if data.get("Response") == "False":
+        return {}
+    returned = (data.get("Title") or "").strip()
+    if not returned:
+        return {}
+    # Year check (if caller provided one)
+    if year:
+        try:
+            returned_year = int(str(data.get("Year", "0"))[:4])
+        except (ValueError, TypeError):
+            returned_year = 0
+        if returned_year and abs(returned_year - year) > 2:
+            log(f"  OMDb year mismatch: queried {queried_title!r} ({year}), "
+                f"got {returned!r} ({returned_year})", "DEBUG")
+            return {}
+    # Word-overlap check. Strip punctuation, lowercase, split on spaces.
+    # A "significant" word is len > 2 and not in the stoplist.
+    stoplist = {"the", "a", "an", "of", "and", "or", "in", "on", "at", "to",
+                "for", "with", "by", "from", "is", "movie", "film"}
+    def significant(text):
+        words = re.findall(r"[a-z0-9]+", text.lower())
+        return {w for w in words if len(w) > 2 and w not in stoplist}
+    q_words = significant(queried_title)
+    r_words = significant(returned)
+    # If the query has at least one significant word, the result must
+    # share at least one with the query. Single-word queries (e.g. just
+    # "Superman") always pass since the query word is "superman" and
+    # the result title will contain it.
+    if q_words and not (q_words & r_words):
+        log(f"  OMDb title mismatch: queried {queried_title!r}, "
+            f"got {returned!r}", "DEBUG")
+        return {}
+    return data
+
+
 def get_omdb_full(raw_title: str, year=None):
     title = _clean_title(raw_title)
     if not title:
@@ -579,16 +627,25 @@ def get_omdb_full(raw_title: str, year=None):
     if year:
         params["y"] = year
     data = _omdb_request(params)
+    # V6.0 fix: OMDb fuzzy-matches aggressively. Searching "Superman: The
+    # Movie" can return "Bane v Superman: The Movie" (a 2016 fan short)
+    # or other unrelated titles. We retry if the OMDb title doesn't
+    # share at least one significant word with our query. Same for the
+    # year fallback and the short_title fallbacks below.
+    data = _omdb_reject_fuzzy_mismatch(title, data, year)
     if not data and year:
         data = _omdb_request({"t": title, "type": "movie", "plot": "short"})
+        data = _omdb_reject_fuzzy_mismatch(title, data, None)
     # Fallback 1: if title has subtitle after ":", try without subtitle
     if not data and ":" in title:
         short_title = title.split(":")[0].strip()
         data = _omdb_request({"t": short_title, "type": "movie", "plot": "short"})
+        data = _omdb_reject_fuzzy_mismatch(short_title, data, None)
     # Fallback 2: if title has subtitle after " - ", try without
     if not data and " - " in title:
         short_title = title.split(" - ")[0].strip()
         data = _omdb_request({"t": short_title, "type": "movie", "plot": "short"})
+        data = _omdb_reject_fuzzy_mismatch(short_title, data, None)
     if not data:
         # V3.3: do NOT cache the negative result. A transient OMDb outage
         # or a typo would otherwise silently kill that film forever in
