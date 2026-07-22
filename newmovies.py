@@ -53,6 +53,8 @@ def _load_config():
             "OLLAMA_MODEL":        str(cfg.get("ollama_model",   "llama3.1:8b")),
             "QUALITY_PROFILE_ID":  int(cfg.get("quality_profile_id", 1)),
             "MINIMUM_AVAILABILITY":str(cfg.get("minimum_availability", "announced")),
+            "TMDB_API_KEY":        str(cfg.get("tmdb_api_key",   "")),
+            "TMDB_REGION":         str(cfg.get("tmdb_region",    "FR")),
         }
     env_file = base / ".env"
     if env_file.exists():
@@ -86,6 +88,8 @@ ROOT_FOLDER          = _cfg["ROOT_FOLDER"]
 OLLAMA_MODEL         = _cfg["OLLAMA_MODEL"]
 QUALITY_PROFILE_ID   = _cfg["QUALITY_PROFILE_ID"]
 MINIMUM_AVAILABILITY = _cfg["MINIMUM_AVAILABILITY"]
+TMDB_API_KEY         = _cfg["TMDB_API_KEY"]
+TMDB_REGION          = _cfg["TMDB_REGION"]
 
 if not OMDB_KEYS:
     print("[ERROR] No OMDb key found. Check config.yaml (OMDB_KEYS=key1,key2,...)")
@@ -183,6 +187,10 @@ parser.add_argument("--watchlist",     type=str,   default=None,
     help="Import films from Letterboxd or IMDb CSV watchlist file")
 parser.add_argument("--analyze",       action="store_true",
     help="AI-powered collection analysis with personalized recommendations")
+parser.add_argument("--discovery",     action="store_true",
+    help="Discover recent & upcoming films via TMDB (independent of your collection)")
+parser.add_argument("--blu-ray",       action="store_true",
+    help="With --discovery, also include recent/upcoming Blu-ray/DVD/4K releases")
 parser.add_argument("--synopsis", action="store_true",
     help="Show full plot synopsis when reviewing films one by one")
 # V5.5 toggles were removed in V5.7: poster/synopsis/credits are
@@ -1717,6 +1725,223 @@ def build_collection_profile(radarr: list) -> dict:
     }
 
 
+def _tmdb_get(path: str, params: dict) -> dict:
+    """Single TMDB API call. Returns parsed JSON or {} on error."""
+    if not TMDB_API_KEY:
+        return {}
+    qp = {"api_key": TMDB_API_KEY, "language": "en-US"}
+    qp.update(params)
+    try:
+        r = requests.get(
+            f"https://api.themoviedb.org/3{path}",
+            params=qp, timeout=15
+        )
+        if r.status_code != 200:
+            log(f"TMDB HTTP {r.status_code} on {path}: {r.text[:200]}", "WARNING")
+            return {}
+        return r.json()
+    except Exception as e:
+        log(f"TMDB error on {path}: {e}", "ERROR")
+        return {}
+
+
+def _tmdb_now_playing(region: str) -> list:
+    """Films in theaters this week in the given region. Up to 2 pages = ~40 films."""
+    out = []
+    for page in (1, 2):
+        data = _tmdb_get("/movie/now_playing", {"region": region, "page": page})
+        out.extend(data.get("results", []))
+    return out
+
+
+def _tmdb_upcoming(region: str) -> list:
+    """Films releasing in the next 60 days in the given region. Up to 2 pages."""
+    out = []
+    for page in (1, 2):
+        data = _tmdb_get("/movie/upcoming", {"region": region, "page": page})
+        out.extend(data.get("results", []))
+    return out
+
+
+def _tmdb_physical_releases(region: str) -> list:
+    """Films with a recent or upcoming physical release (Blu-ray/DVD/4K)
+    in the given region, via TMDB /discover with_release_type=5.
+    Window: 90 days in the past through 60 days in the future.
+    Up to 2 pages = ~40 films.
+    """
+    from datetime import date, timedelta
+    today = date.today()
+    window_start = (today - timedelta(days=90)).isoformat()
+    window_end   = (today + timedelta(days=60)).isoformat()
+    out = []
+    for page in (1, 2):
+        data = _tmdb_get("/discover/movie", {
+            "region":                  region,
+            "with_release_type":       "5",  # 5 = Physical (Blu-ray/DVD/4K)
+            "primary_release_date.gte": window_start,
+            "primary_release_date.lte": window_end,
+            "sort_by":                 "popularity.desc",
+            "page":                    page,
+        })
+        out.extend(data.get("results", []))
+    return out
+
+
+def _tmdb_watch_providers(tmdb_id: int, region: str) -> list:
+    """Return the list of flatrate/streaming providers for a film in a region."""
+    data = _tmdb_get(f"/movie/{tmdb_id}/watch/providers", {})
+    if not data:
+        return []
+    region_data = data.get("results", {}).get(region, {})
+    return region_data.get("flatrate", [])
+
+
+def _tmdb_director(tmdb_id: int) -> str:
+    """Return the primary director name for a TMDB film, or ''."""
+    data = _tmdb_get(f"/movie/{tmdb_id}/credits", {})
+    if not data:
+        return ""
+    for crew_member in data.get("crew", []):
+        if crew_member.get("job") == "Director":
+            return crew_member.get("name", "")
+    return ""
+
+
+def run_discovery(radarr_titles: set, radarr_tmdb: set):
+    """Discover recent and upcoming films via TMDB, filter against the
+    user's Radarr collection, and present the top picks.
+    """
+    if not TMDB_API_KEY:
+        log("TMDB_API_KEY missing in config.yaml. Get a free key at "
+            "https://www.themoviedb.org/settings/api", "ERROR")
+        return
+    region = TMDB_REGION or "FR"
+    cprint(f"  [TMDB] Region: {region}", "gray")
+    cprint(f"  [TMDB] Fetching now_playing...", "magenta")
+    now_playing = _tmdb_now_playing(region)
+    cprint(f"  [TMDB] Fetching upcoming (next 60 days)...", "magenta")
+    upcoming = _tmdb_upcoming(region)
+    physical = []
+    if args.blu_ray:
+        cprint(f"  [TMDB] Fetching physical releases (Blu-ray/DVD/4K, ±90d)...", "magenta")
+        physical = _tmdb_physical_releases(region)
+    cprint(f"  [TMDB] {len(now_playing)} in theaters, {len(upcoming)} upcoming, "
+           f"{len(physical)} physical", "gray")
+    # Combine + dedupe by tmdb id
+    seen = set()
+    candidates = []
+    for film in now_playing + upcoming + physical:
+        tid = film.get("id")
+        if not tid or tid in seen:
+            continue
+        seen.add(tid)
+        candidates.append(film)
+    cprint(f"  [TMDB] {len(candidates)} unique films to evaluate", "gray")
+    print()
+
+    retained = []
+    seen_titles_lower = set(t.lower() for t in radarr_titles)
+    for film in candidates:
+        title = (film.get("title") or film.get("original_title") or "").strip()
+        if not title or title.lower() in seen_titles_lower:
+            continue
+        if title.lower() in BLACKLIST:
+            continue
+        tid = film["id"]
+        release_date = film.get("release_date", "")
+        year = int(release_date[:4]) if release_date[:4].isdigit() else 0
+        if not (args.sd <= year <= args.fd):
+            continue
+        # Validate via OMDb to get IMDb rating (TMDB vote_average is biased)
+        omdb = get_omdb_full(title, year=year if year else None)
+        if not omdb:
+            continue
+        if omdb["title"] in radarr_titles or omdb["title"].lower() in BLACKLIST:
+            continue
+        if omdb["rating"] < args.score_relax:
+            continue
+        # Verify not already in Radarr via lookup
+        lookup = get_radarr_lookup(omdb["title"], omdb["year"])
+        if not lookup or lookup.get("tmdbId") in radarr_tmdb:
+            continue
+        # Get watch providers + director (skipped silently on failure)
+        providers = _tmdb_watch_providers(tid, region)
+        provider_names = [p.get("provider_name", "?") for p in providers[:3]]
+        director = _tmdb_director(tid)
+        # Score: IMDb rating weighted by TMDB popularity
+        popularity = film.get("popularity", 0) or 0
+        score = round(omdb["rating"] * 1.5 + min(popularity, 100) / 50, 2)
+        log(f"  + {omdb['title']} ({omdb['year']})  IMDb:{omdb['rating']:.1f}  "
+            f"{', '.join(provider_names) if provider_names else 'no streaming in region'}",
+            "SELECT")
+        retained.append({
+            "title":       omdb["title"],
+            "year":        omdb["year"],
+            "rating":      omdb["rating"],
+            "score":       score,
+            "plot":        omdb.get("plot", ""),
+            "director":    director,
+            "providers":   provider_names,
+            "release_date": release_date,
+            "tmdb_id":     tid,
+            "source":      "discovery",
+            "lookup":      lookup,
+        })
+
+    if not retained:
+        log("No recent/upcoming films match your criteria.", "WARNING")
+        return
+    # Sort by score desc, take top 10
+    retained.sort(key=lambda x: x["score"], reverse=True)
+    top = retained[:10]
+    print()
+    cprint("=" * 90, "white", bold=True)
+    cprint(f"  RECENTLY RELEASED & UPCOMING  --  {len(top)} films", "white", bold=True)
+    cprint("=" * 90, "white", bold=True)
+    print()
+    for i, m in enumerate(top, 1):
+        providers = f"  [{', '.join(m['providers'])}]" if m['providers'] else ""
+        cprint(f"  {i:>2}.  {m['title']} ({m['year']})  IMDb {m['rating']:.1f}  "
+               f"score {m['score']:.2f}{providers}", "white")
+        if m.get("director"):
+            cprint(f"        dir. {m['director']}", "gray")
+    print()
+    if args.dry_run:
+        cprint("  (dry-run: not adding to Radarr)", "WARNING")
+        return
+    # Offer to add all / one by one / no
+    answer = input("\n  Add to Radarr? (a=all / o=one by one / n=no): ").strip().lower()
+    if answer == "n" or not answer:
+        return
+    if answer == "a":
+        for m in top:
+            lk = m["lookup"]
+            payload = _build_add_payload({
+                "title": lk["title"], "year": lk.get("year"),
+                "rating": m["rating"], "score": m["score"],
+                "reasons": ["recent_release"], "tmdbId": lk["tmdbId"],
+                "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
+                "source": m["source"], "lookup": lk,
+            })
+            if add_to_radarr(payload):
+                log(f"[ADDED] {m['title']} ({m['year']})", "SUCCESS")
+    elif answer == "o":
+        for m in top:
+            lk = m["lookup"]
+            yn = input(f"  Add {m['title']} ({m['year']})? [y/N]: ").strip().lower()
+            if yn != "y":
+                continue
+            payload = _build_add_payload({
+                "title": lk["title"], "year": lk.get("year"),
+                "rating": m["rating"], "score": m["score"],
+                "reasons": ["recent_release"], "tmdbId": lk["tmdbId"],
+                "titleSlug": lk["titleSlug"], "images": lk.get("images", []),
+                "source": m["source"], "lookup": lk,
+            })
+            if add_to_radarr(payload):
+                log(f"[ADDED] {m['title']} ({m['year']})", "SUCCESS")
+
+
 def ollama_analyze_collection(profile: dict) -> tuple:
     """Ask the LLM backend to analyze the collection and suggest directions."""
     if not OLLAMA_OK or LLM is None:
@@ -2556,6 +2781,12 @@ def main():
     # ── --analyze mode ────────────────────────────────────────────────────
     if args.analyze:
         run_analyze(radarr, radarr_titles, radarr_tmdb)
+        return
+    # ─────────────────────────────────────────────────────────────────────
+
+    # ── --discovery mode ─────────────────────────────────────────────────
+    if args.discovery:
+        run_discovery(radarr_titles, radarr_tmdb)
         return
     # ─────────────────────────────────────────────────────────────────────
 
