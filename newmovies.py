@@ -21,6 +21,7 @@ import random
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 from urllib.parse import quote
 
 try:
@@ -207,6 +208,19 @@ parser.add_argument("--export",        type=str,   default=None,
 # (e.g. Paul Blart: Mall Cop for Kevin James).
 parser.add_argument("--omdb-fallback", action="store_true",
     help="(artist modes) after the LLM returns, query OMDb search to find any missing films by the person")
+# V7.4: TMDB-first filmography for actor/director artist modes. Fetches
+# the canonical filmography from TMDB (/person/{id}/movie_credits)
+# and merges it with the LLM output. TMDB has near-perfect recall
+# (Will Ferrell = 89 features, vs ~18 from gemma-4-26B), while the
+# LLM catches any rare films TMDB missed. Default ON for actor/
+# director (the only roles TMDB has a clean endpoint for); OFF
+# for composer/author where TMDB crew credits are noisier.
+parser.add_argument("--tmdb-first", dest="tmdb_first",
+    action="store_true", default=True,
+    help="(artist modes) merge TMDB filmography with LLM output (default ON)")
+parser.add_argument("--no-tmdb-first", dest="tmdb_first",
+    action="store_false",
+    help="(artist modes) skip TMDB, use LLM only")
 # V5.25: interactive onboarding. For new Radarr libraries: ask the
 # user a few questions about their taste, then propose 2 films
 # per genre (Action, Comedy, Drama, Sci-Fi, Horror, Romance,
@@ -270,9 +284,19 @@ def print_header(blacklist_size=0, genre_filter=None):
     # V5.8: model name was hardcoded to OLLAMA_MODEL (legacy, default
     # "llama3.1:8b") even when the user is on llamacpp. Now we use
     # the LLM backend's own label which knows the real model.
-    # Falls back to OLLAMA_MODEL if LLM is None (offline / init fail).
+    # V7.2: also resolve the ACTUALLY loaded model on the server
+    # (the user swaps models on .32 between test runs, and
+    # llama-server's OpenAI-compat API ignores the "model" field
+    # of requests, so the config value can be stale). Falls back
+    # to LLM.model if actual_model wasn't resolved (offline /
+    # init fail / healthcheck didn't run).
     if LLM is not None:
-        model_label = f"{LLM.name} ({LLM.model})"
+        actual = (getattr(LLM, "actual_model", None) or LLM.model)
+        # Use the short basename (Qwen3.6-35B-A3B-UD-IQ2_M.gguf) for
+        # the header line so it fits in 30 chars; the LLM: line above
+        # already showed the full path.
+        short = actual.rsplit("/", 1)[-1] if "/" in actual else actual
+        model_label = f"{LLM.name} ({short})"
     else:
         model_label = OLLAMA_MODEL
     cprint(f"  Model: {model_label:<30} Blacklist: {blacklist_size} titles", "gray")
@@ -460,8 +484,21 @@ def _build_llm_backend():
 LLM = _build_llm_backend()
 if LLM is not None:
     LLM_OK = LLM.healthcheck()
-    label = f"{LLM.name} ({LLM.model})"
+    # V7.2: show the ACTUALLY loaded model on the server, not the
+    # config value. llama-server's OpenAI-compat API ignores the
+    # "model" field of the request and serves whatever is loaded —
+    # so the config value can be wrong/stale without anyone noticing.
+    # The user swaps models on .32 between test runs, so this matters.
+    # Fallback chain: actual_model (from /v1/models) -> self.model (config).
+    actual = getattr(LLM, "actual_model", None) or LLM.model
+    label = f"{LLM.name} ({actual})"
     cprint(f"  LLM: {label}  base={getattr(LLM, 'base_url', 'local')}", "gray")
+    # Warn if the configured model doesn't match what's actually loaded.
+    if (getattr(LLM, "actual_model", None)
+            and LLM.actual_model != LLM.model
+            and LLM.model not in LLM.actual_model):
+        log(f"Config model '{LLM.model}' differs from server "
+            f"'{LLM.actual_model}' — using server model", "WARNING")
 else:
     LLM_OK = False
     cprint("  LLM: backend unavailable (llm_backend.py import failed)", "WARNING")
@@ -633,19 +670,31 @@ def get_omdb_full(raw_title: str, year=None):
     # share at least one significant word with our query. Same for the
     # year fallback and the short_title fallbacks below.
     data = _omdb_reject_fuzzy_mismatch(title, data, year)
-    if not data and year:
-        data = _omdb_request({"t": title, "type": "movie", "plot": "short"})
-        data = _omdb_reject_fuzzy_mismatch(title, data, None)
-    # Fallback 1: if title has subtitle after ":", try without subtitle
-    if not data and ":" in title:
+    # V6.1 fix: when a year was specified, do NOT fall back to a
+    # no-year query. OMDb with y=1978 can return Response:False for
+    # "Superman: The Movie" (no exact match), and the no-year fallback
+    # would then hit "Bane v Superman: The Movie" (2016) — same word
+    # "superman", wrong decade. The no-year fallback is only safe when
+    # the caller didn't supply a year. When a year is given, we only
+    # retry with the cleaned (short) title + the same year.
+    if not data and year and ":" in title:
         short_title = title.split(":")[0].strip()
-        data = _omdb_request({"t": short_title, "type": "movie", "plot": "short"})
-        data = _omdb_reject_fuzzy_mismatch(short_title, data, None)
-    # Fallback 2: if title has subtitle after " - ", try without
-    if not data and " - " in title:
-        short_title = title.split(" - ")[0].strip()
-        data = _omdb_request({"t": short_title, "type": "movie", "plot": "short"})
-        data = _omdb_reject_fuzzy_mismatch(short_title, data, None)
+        data = _omdb_request({"t": short_title, "y": year, "type": "movie", "plot": "short"})
+        data = _omdb_reject_fuzzy_mismatch(short_title, data, year)
+    elif not data and year:
+        # Year given but no colon in title and no match: don't retry
+        # without the year (would risk wrong-decade fuzzy matches).
+        pass
+    else:
+        # No year was given — safe to fall back to no-year variants
+        if not data and ":" in title:
+            short_title = title.split(":")[0].strip()
+            data = _omdb_request({"t": short_title, "type": "movie", "plot": "short"})
+            data = _omdb_reject_fuzzy_mismatch(short_title, data, None)
+        if not data and " - " in title:
+            short_title = title.split(" - ")[0].strip()
+            data = _omdb_request({"t": short_title, "type": "movie", "plot": "short"})
+            data = _omdb_reject_fuzzy_mismatch(short_title, data, None)
     if not data:
         # V3.3: do NOT cache the negative result. A transient OMDb outage
         # or a typo would otherwise silently kill that film forever in
@@ -1091,10 +1140,21 @@ def run_saga_mode(radarr_titles: set, radarr_tmdb: set):
             continue
 
         # Clean and validate each film
+        # V6.1: ollama_get_saga_films now returns [(title, year), ...]
+        # tuples (was [str, ...] in V5.13 and earlier). The year is
+        # passed to OMDb so a query like "Superman: The Movie" doesn't
+        # fuzzy-match to "Bane v Superman: The Movie" (2016 fan short).
         missing = []
-        for raw in saga_films_raw:
+        for entry in saga_films_raw:
+            # Unpack (title, year) tuple, or treat bare string as legacy
+            if isinstance(entry, (list, tuple)) and len(entry) >= 1:
+                title_raw = entry[0]
+                film_year = entry[1] if len(entry) >= 2 else None
+            else:
+                title_raw = entry
+                film_year = None
             # Clean saga title: remove year, comments, and anything after ' - '
-            raw_clean = re.sub(r'\s*\(\d{4}\)\s*$', '', str(raw).strip())
+            raw_clean = re.sub(r'\s*\(\d{4}\)\s*$', '', str(title_raw).strip())
             raw_clean = re.sub(r'\s+is\s+not.*$', '', raw_clean, flags=re.IGNORECASE)
             raw_clean = re.sub(r'\s+was\s+.*$', '', raw_clean, flags=re.IGNORECASE)
             raw_clean = re.sub(r'\s*,.*$', '', raw_clean)  # remove trailing comments
@@ -1111,11 +1171,11 @@ def run_saga_mode(radarr_titles: set, radarr_tmdb: set):
                 log(f'  Already owned: {title}', "INFO")
                 continue
 
-            # Validate via OMDb. If the LLM returned a bare title
-            # (e.g. "Solo" or "Rogue One" for a Star Wars saga),
-            # OMDb may not find it. Try with the saga name prefixed
-            # as a fallback. V5.12.
-            omdb = get_omdb_full(title)
+            # Validate via OMDb. V6.1: pass the year the LLM returned
+            # so OMDb does not fuzzy-match onto unrelated films of the
+            # same name. If the LLM didn't return a year, fall back to
+            # the no-year lookup as before.
+            omdb = get_omdb_full(title, year=film_year) if film_year else get_omdb_full(title)
             if not omdb:
                 # Try "Saga: Title" (Star Wars convention)
                 omdb = get_omdb_full(f"{saga}: {title}")
@@ -1293,6 +1353,40 @@ def run_artist_mode(person: str, role: str, radarr_titles: set, radarr_tmdb: set
     if not films_raw:
         log(f'No films found for {role}: "{person}"', "WARNING")
         return
+
+    # V7.4: TMDB filmography merge. For actor/director, fetch the
+    # canonical filmography from TMDB and merge it with the LLM
+    # output. TMDB has near-perfect recall (~89 features for Will
+    # Ferrell, ~18 from gemma-4-26B), the LLM catches any rare
+    # titles TMDB missed and benefits from cross-checking its
+    # own knowledge. The post-hoc OMDb role-match validator in
+    # the loop below catches any wrong-person attribution.
+    #
+    # Default ON for actor/director. Disabled for composer/author
+    # where TMDB crew credits are too thin to be reliable (the
+    # function returns [] for those roles and we fall back to
+    # LLM-only).
+    tmdb_count = 0
+    if getattr(args, "tmdb_first", True) and role in ("actor", "cast", "director"):
+        cprint(f"  [tmdb-first] Querying TMDB for {role} filmography...", "magenta")
+        tmdb_filmography = _tmdb_get_filmography(person, role)
+        if tmdb_filmography:
+            tmdb_titles = _tmdb_filmography_to_titles(tmdb_filmography)
+            # Dedupe against LLM output (case-insensitive)
+            llm_set = {t.lower().strip() for t in films_raw}
+            added = [t for t in tmdb_titles
+                     if t and t.lower().strip() not in llm_set]
+            cprint(f"  [tmdb-first] {len(tmdb_titles)} titles from TMDB, "
+                   f"{len(added)} new vs LLM", "magenta")
+            log(f"tmdb-first: {len(tmdb_titles)} TMDB titles, "
+                f"{len(added)} new vs LLM ({len(films_raw)} LLM titles)", "INFO")
+            # TMDB first, then LLM additions — preserves the LLM's
+            # chronological ordering for the titles it knows, and
+            # tacks on the TMDB-only ones at the end.
+            films_raw = list(tmdb_titles) + list(films_raw)
+            tmdb_count = len(tmdb_titles)
+        else:
+            cprint(f"  [tmdb-first] no TMDB filmography, using LLM only", "magenta")
 
     # V5.22: OMDb search fallback. The LLM sometimes drops famous
     # films (e.g. "kevin james" forgets Paul Blart: Mall Cop). When
@@ -1842,6 +1936,161 @@ def _tmdb_physical_releases(region: str) -> list:
         })
         out.extend(data.get("results", []))
     return out
+
+
+def _tmdb_search_person(name: str) -> Optional[int]:
+    """Resolve a person name to a TMDB person id. Picks the first
+    'Acting' department match (vs 'Production', 'Directing', etc.)
+    to avoid returning the wrong person when multiple share a name.
+    Returns the id, or None if not found / ambiguous.
+
+    V7.4: heuristic — if the top result is in Acting and the name
+    match is "good enough" (case-insensitive contains the full query
+    name), use it. Otherwise log a warning and use the first result
+    anyway (the LLM role-match validator will catch wrong-person
+    attribution downstream).
+    """
+    if not TMDB_API_KEY:
+        return None
+    data = _tmdb_get("/search/person", {"query": name})
+    results = data.get("results", [])
+    if not results:
+        return None
+    # Prefer an 'Acting' department match whose name is a good
+    # case-insensitive contains match.
+    name_lc = name.lower().strip()
+    for r in results:
+        rname = (r.get("name") or "").lower().strip()
+        if r.get("known_for_department") == "Acting" and (
+            rname == name_lc or rname.startswith(name_lc)
+        ):
+            return r.get("id")
+    # Fallback: first result (will be the most popular match).
+    return results[0].get("id")
+
+
+def _tmdb_get_filmography(person: str, role: str) -> list:
+    """Return the canonical filmography for `person` in the given `role`,
+    using TMDB. Returns a list of {"title", "year", "tmdb_id", "character",
+    "popularity", "vote_count"} dicts.
+
+    Endpoint strategy:
+      actor    -> /person/{id}/movie_credits.cast
+      director -> /person/{id}/movie_credits.crew (filter job="Director")
+      composer -> /person/{id}/movie_credits.crew (filter job="Original
+                  Music Composer" or "Composer") — noisier, often empty
+                  for film composers, so callers may want to fall back
+                  to LLM-only
+      author   -> not implemented (TMDB doesn't track book authors
+                  separately from writers, and the data is too thin)
+
+    Filters applied (caller can override):
+      - adult: skip
+      - video: skip (no straight-to-video)
+      - vote_count >= MIN_VOTES (so the role-match validator has
+        a reliable IMDb rating to check against)
+      - character for cast: skip if "voice" in character AND
+        "voice" not in role (we WANT to keep voice roles when
+        the user asks for actor; the validator decides if a
+        voice role is "credited". This is opt-in via the caller.)
+    """
+    if not TMDB_API_KEY:
+        return []
+    person_id = _tmdb_search_person(person)
+    if not person_id:
+        log(f"TMDB: no person found for '{person}'", "WARNING")
+        return []
+    data = _tmdb_get(f"/person/{person_id}/movie_credits", {})
+    if not data:
+        return []
+    out = []
+    seen_ids = set()
+    if role in ("actor", "cast"):
+        credits = data.get("cast", [])
+        for m in credits:
+            if m.get("adult") or m.get("video"):
+                continue
+            # V7.4: vote_count >= 50 is the empirical sweet spot for
+            # "real theatrical feature" vs "short / sketch / spoof /
+            # behind-the-scenes / SNL special / cameo docu / random
+            # misattribution". Tested on Will Ferrell (jul 2026):
+            #   137 total cast credits
+            #   89 with vote_count >= 10  (still has Cord & Tish,
+            #     Presidential Reunion, MTV Reloaded, Ferrell Takes
+            #     the Field, Bat Fight, Green Team, The Landlord,
+            #     Wake Up, David, etc. — all shorts/spoofs)
+            #   67 with vote_count >= 50  (clean: only legit features
+            #     + a few 90s/00s mid-tier theatrical releases like
+            #     The Suburbans that drop)
+            #   60 with vote_count >= 100 (too aggressive — drops
+            #     Kicking & Screaming, Melinda and Melinda, Bewitched)
+            # The validator below also does OMDb role-match, so even
+            # borderline theatrical entries that slipped through
+            # (vote_count 50-100) are filtered out if Ferrell isn't
+            # actually in the OMDb top 3 actors.
+            if (m.get("vote_count") or 0) < 50:
+                continue
+            mid = m.get("id")
+            if mid in seen_ids:
+                continue
+            seen_ids.add(mid)
+            year = None
+            rd = m.get("release_date") or ""
+            if len(rd) >= 4 and rd[:4].isdigit():
+                year = int(rd[:4])
+            out.append({
+                "title":      m.get("title") or m.get("original_title") or "",
+                "year":       year,
+                "tmdb_id":    mid,
+                "character":  m.get("character") or "",
+                "popularity": m.get("popularity") or 0,
+                "vote_count": m.get("vote_count") or 0,
+                "source":     "tmdb",
+            })
+    elif role == "director":
+        credits = data.get("crew", [])
+        for m in credits:
+            if m.get("job") != "Director":
+                continue
+            if m.get("adult") or m.get("video"):
+                continue
+            # See the actor block above for the rationale on 50.
+            if (m.get("vote_count") or 0) < 50:
+                continue
+            mid = m.get("id")
+            if mid in seen_ids:
+                continue
+            seen_ids.add(mid)
+            year = None
+            rd = m.get("release_date") or ""
+            if len(rd) >= 4 and rd[:4].isdigit():
+                year = int(rd[:4])
+            out.append({
+                "title":      m.get("title") or m.get("original_title") or "",
+                "year":       year,
+                "tmdb_id":    mid,
+                "character":  "",
+                "popularity": m.get("popularity") or 0,
+                "vote_count": m.get("vote_count") or 0,
+                "source":     "tmdb",
+            })
+    else:
+        # composer / author: TMDB crew credits are too thin to be
+        # reliable. Log and return [] so the caller falls back to
+        # the LLM list alone.
+        log(f"TMDB filmography not implemented for role={role}, "
+            f"skipping TMDB and using LLM only", "INFO")
+        return []
+    # Sort by year ascending (oldest first) for readability
+    out.sort(key=lambda x: (x["year"] or 9999))
+    return out
+
+
+def _tmdb_filmography_to_titles(filmography: list) -> list:
+    """Convert a list of TMDB filmography dicts (as returned by
+    _tmdb_get_filmography) to a flat list of title strings, ready to
+    merge with the LLM's flat title list."""
+    return [f["title"] for f in filmography if f.get("title")]
 
 
 def _tmdb_watch_providers(tmdb_id: int, region: str) -> list:
