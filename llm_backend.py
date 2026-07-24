@@ -38,36 +38,241 @@ import requests
 # =============================================================================
 
 def parse_film_titles(raw: str) -> list:
-    """Extrait une liste de titres depuis une sortie LLM. Trois stratégies :
-       1) JSON complet {"films": [...]}
-       2) Sous-ensemble JSON {"films": ["...", "..."]}
-       3) Fallback ligne par ligne (markdown "- Title" / "1. Title")
+    """Extrait une liste de titres depuis une sortie LLM. Cinq stratégies,
+       appliquées dans l'ordre jusqu'à ce qu'une retourne un résultat
+       non-vide :
+
+       1) Dernier bloc JSON {"films": [...]} complet dans la réponse.
+          (V7.3: les modèles qui raisonnent en visible — gemma-4-26B-A4B
+          par exemple — émettent plusieurs blocs JSON, le dernier
+          contenant souvent la version "nettoyée après self-correction".
+          On prend le DERNIER, pas le premier.)
+       2) Premier sous-ensemble {"films": [...]} — fallback si pas de
+          bloc complet (raison : max_tokens a tronqué la réponse avant
+          l'accolade fermante).
+       3) Format objet {"films": [{"title":..., "year":...}, ...]} — V6.1
+          saga style. Le regex matche {"films": [ (n'importe quoi sauf
+          ]) ] } en mode non-greedy, plusieurs fois, on prend le DERNIER.
+       4) Extraction d'un tableau même si le JSON est cassé autour.
+       5) Lignes markdown ("- Title" / "1. Title") en dernier recours.
     """
     if not raw:
         return []
-    # 1) JSON complet
+
+    def _clean(t: str) -> str:
+        # Strip surrounding quotes / whitespace, drop "(YYYY)" suffix
+        # (the model sometimes includes years in the array form).
+        t = t.strip().strip("\"'")
+        t = re.sub(r"\s*\(\d{4}\)\s*$", "", t)
+        return t
+
+    def _dedupe(seq):
+        # Preserve order, drop empties and 1-2 char noise tokens.
+        seen = set()
+        out = []
+        for x in seq:
+            x = x.strip()
+            if not x or len(x) < 2:
+                continue
+            k = x.lower()
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(x)
+        return out
+
+    # 1) Last complete JSON block {"films": [...]} of strings.
+    #    Strategy 1's old regex was {no-braces}[no-braces] which works
+    #    for string arrays. We re-use it but find ALL matches and
+    #    take the LAST (handles gemma-4 reasoning pattern).
+    last_good = None
+    for m in re.finditer(
+        r'\{\s*"films"\s*:\s*\[\s*(?:"[^"]*"\s*,?\s*)+\s*\]\s*\}',
+        raw, re.DOTALL,
+    ):
+        try:
+            parsed = [t for t in json.loads(m.group(0)).get("films", []) if t]
+            if parsed:
+                last_good = [_clean(t) for t in parsed]
+        except Exception:
+            continue
+    if last_good:
+        return _dedupe(last_good)
+
+    # 2) Object-array form: {"films": [{"title":..., "year":...}, ...]}.
+    #    Use a non-greedy match that allows nested braces. We try each
+    #    occurrence and take the longest one (gemma-4's "Final List"
+    #    block is usually the longest).
+    candidates = []
+    for m in re.finditer(
+        r'\{\s*"films"\s*:\s*\[.*?\]\s*\}',
+        raw, re.DOTALL,
+    ):
+        candidates.append((m.start(), m.group(0)))
+    # Sort by length desc — longest match is most likely the clean
+    # final JSON, not a truncated fragment.
+    for _, text in sorted(candidates, key=lambda c: -len(c[1])):
+        try:
+            data = json.loads(text)
+            films = data.get("films", [])
+            if not isinstance(films, list) or not films:
+                continue
+            out = []
+            for entry in films:
+                if isinstance(entry, dict):
+                    title = entry.get("title") or entry.get("name") or ""
+                    if title:
+                        out.append(_clean(str(title)))
+                elif isinstance(entry, str):
+                    out.append(_clean(entry))
+            if out:
+                return _dedupe(out)
+        except Exception:
+            continue
+
+    # 3) Subset JSON : "films": [...] (the closing brace may be
+    #    truncated by max_tokens, so we don't require it).
+    for m in re.finditer(r'"films"\s*:\s*\[([^\]]*)\]', raw, re.DOTALL):
+        try:
+            arr = json.loads("[" + m.group(1) + "]")
+            if isinstance(arr, list) and arr:
+                out = []
+                for entry in arr:
+                    if isinstance(entry, str):
+                        out.append(_clean(entry))
+                if out:
+                    return _dedupe(out)
+        except Exception:
+            continue
+
+    # 3b) Truncated mid-array (no closing ']'): the response was cut
+    #     by max_tokens while writing a string entry. E.g.
+    #       {"films": ["A", "B", "C", "Ti
+    #     The model hasn't even finished "Ti" before the cutoff.
+    #     We extract the array contents up to the last complete
+    #     string, then close the array manually. The last partial
+    #     entry (e.g. "Ti") is dropped (it would be invalid anyway).
+    m = re.search(r'"films"\s*:\s*\[(.*)', raw, re.DOTALL)
+    if m:
+        body = m.group(1)
+        # Match complete string entries only (with closing quote + comma
+        # or end-of-string). We do this by finding all `"..."` pairs
+        # where the closing quote is followed by `,` or end of body.
+        # To handle escaped quotes, walk char-by-char.
+        out = []
+        i = 0
+        in_str = False
+        cur = []
+        while i < len(body):
+            c = body[i]
+            if not in_str:
+                if c == '"':
+                    in_str = True
+                    cur = []
+            else:
+                if c == '\\' and i + 1 < len(body):
+                    # Escaped char, keep as-is
+                    cur.append(body[i:i+2])
+                    i += 2
+                    continue
+                if c == '"':
+                    # End of string. Check what follows: must be
+                    # `,` (more entries coming) or end of body
+                    # (truncated). If neither, abort (malformed).
+                    j = i + 1
+                    while j < len(body) and body[j] in " \t\n\r":
+                        j += 1
+                    if j >= len(body) or body[j] == ",":
+                        out.append(_clean("".join(cur)))
+                        in_str = False
+                    else:
+                        # Malformed: stop walking, keep what we have
+                        break
+                else:
+                    cur.append(c)
+            i += 1
+        if out:
+            return _dedupe(out)
+
+    # 4) Markdown lines: "- Title" or "1. Title"
+    titles = []
+    for line in raw.split("\n"):
+        m2 = re.match(r"^(?:\d+[\.\)]|[-*])\s*(.+)$", line.strip())
+        if m2:
+            t = _clean(m2.group(1))
+            if 2 < len(t) < 100:
+                titles.append(t)
+    return _dedupe(titles)
+
+
+def parse_saga_films(raw: str) -> list:
+    """Parse a saga list as [(title, year), ...] tuples.
+
+    V6.1: required for the OMDb year-passing fix. The LLM is asked
+    to return {"films": [{"title": "...", "year": 1978}, ...]}. Three
+    strategies, mirroring parse_film_titles:
+      1) JSON complet {"films": [{"title":..., "year":...}, ...]}
+      2) JSON partiel (accepte year en int ou str)
+      3) Fallback ligne par ligne "Title (1978)"
+    Returns list of (title, year_or_None) tuples. year is int or None.
+    """
+    if not raw:
+        return []
+    out = []
+    # 1) JSON complet {"films": [{...}, ...]}
     m = re.search(r'\{[^{}]*"films"\s*:\s*\[[^\]]+\][^{}]*\}', raw, re.DOTALL)
     if m:
         try:
-            return [t.strip() for t in json.loads(m.group(0)).get("films", []) if t.strip()]
+            data = json.loads(m.group(0))
+            for entry in data.get("films", []):
+                if not isinstance(entry, dict):
+                    continue
+                title = str(entry.get("title", "")).strip().strip("\"'")
+                if not title or len(title) < 2:
+                    continue
+                year_raw = entry.get("year")
+                try:
+                    year = int(year_raw) if year_raw else None
+                except (ValueError, TypeError):
+                    year = None
+                out.append((title, year))
+            if out:
+                return out
         except Exception:
             pass
-    # 2) Extraction d'un tableau même si le JSON est cassé autour
+    # 2) JSON partiel : on cherche juste le tableau films
     m = re.search(r'"films"\s*:\s*\[([^\]]+)\]', raw, re.DOTALL)
     if m:
         try:
-            return [t.strip() for t in json.loads("[" + m.group(1) + "]") if t.strip()]
+            arr = json.loads("[" + m.group(1) + "]")
+            for entry in arr:
+                if not isinstance(entry, dict):
+                    continue
+                title = str(entry.get("title", "")).strip().strip("\"'")
+                if not title or len(title) < 2:
+                    continue
+                year_raw = entry.get("year")
+                try:
+                    year = int(year_raw) if year_raw else None
+                except (ValueError, TypeError):
+                    year = None
+                out.append((title, year))
+            if out:
+                return out
         except Exception:
             pass
-    # 3) Lignes markdown
-    titles = []
+    # 3) Fallback markdown : "Title (1978)" ou "- Title"
     for line in raw.split("\n"):
         m2 = re.match(r'^(?:\d+[\.\)]|[-*])\s*(.+)$', line.strip())
-        if m2:
-            t = re.sub(r'\s*\(\d{4}\)\s*$', '', m2.group(1).strip().strip("\"'"))
-            if 2 < len(t) < 100:
-                titles.append(t)
-    return titles
+        if not m2:
+            continue
+        body = m2.group(1).strip().strip("\"'")
+        m3 = re.search(r'^(.*?)\s*\((\d{4})\)\s*$', body)
+        if m3:
+            out.append((m3.group(1).strip(), int(m3.group(2))))
+        elif 2 < len(body) < 100:
+            out.append((body, None))
+    return out
 
 
 def parse_sagas(raw: str) -> dict:
@@ -229,6 +434,42 @@ class LLMBackend(ABC):
         return parse_film_titles(self.chat(prompt, kind="long", max_tokens=2048))
 
     def get_saga_films(self, saga_name: str) -> list:
+        """Return [(title, year), ...] for the saga.
+
+        The year is critical: it gets passed to OMDb so a query like
+        "Superman: The Movie" can resolve to the actual 1978 film
+        instead of OMDb's fuzzy "Bane v Superman: The Movie" 2016
+        short. V6.1.
+        """
+        prompt = (
+            f'You are a film expert with encyclopedic knowledge of world cinema.\n\n'
+            f'List EVERY theatrically released film in the "{saga_name}" '
+            f'saga/franchise in chronological release order.\n\n'
+            f'For "{saga_name}", this includes the COMPLETE list — do not omit any film.\n\n'
+            f'STRICT Rules:\n'
+            f'- Include ALL films: part 1, part 2, part 3... every numbered sequel\n'
+            f'- Include spin-offs and anthology films\n'
+            f'- NO TV shows, NO animated series, NO shorts, NO special editions\n'
+            f'- Use EXACT English theatrical release title\n'
+            f'- Do NOT skip any film, do NOT add comments or notes\n'
+            f'- Each entry must include BOTH the title AND the year of release\n'
+            # V5.13: explicit anti-omission reminders. The 35B-Q3
+            # model was dropping 1-3 films on Star Wars / Marvel runs
+            # (e.g. forgetting Episode IV A New Hope). Adding
+            # numbered placeholders forces the model to count and
+            # fill all slots.
+            f'- If the saga has N films, output EXACTLY N entries. Count them.\n'
+            f'- For numbered sagas (Star Wars, Fast & Furious, etc.) include EVERY episode\n'
+            f'\nRespond ONLY with this exact JSON (no other text before or after):\n'
+            f'{{"films": [{{"title": "Title 1", "year": 1978}}, '
+            f'{{"title": "Title 2", "year": 1980}}]}}'
+        )
+        return parse_saga_films(self.chat(prompt, kind="long"))
+
+    def get_saga_films_legacy(self, saga_name: str) -> list:
+        """Legacy V5.13 single-shot list. Kept as a fallback for
+        old callers that expect a flat list of titles. Not used by
+        run_saga_mode anymore (V6.1)."""
         prompt = (
             f'You are a film expert with encyclopedic knowledge of world cinema.\n\n'
             f'List EVERY theatrically released film in the "{saga_name}" '
@@ -241,11 +482,6 @@ class LLMBackend(ABC):
             f'- Use EXACT English theatrical release title\n'
             f'- Do NOT skip any film, do NOT add comments or notes\n'
             f'- Each entry must be ONLY the film title, nothing else\n'
-            # V5.13: explicit anti-omission reminders. The 35B-Q3
-            # model was dropping 1-3 films on Star Wars / Marvel runs
-            # (e.g. forgetting Episode IV A New Hope). Adding
-            # numbered placeholders forces the model to count and
-            # fill all slots.
             f'- If the saga has N films, output EXACTLY N entries. Count them.\n'
             f'- For numbered sagas (Star Wars, Fast & Furious, etc.) include EVERY episode\n'
             f'\nRespond ONLY with this exact JSON (no other text before or after):\n'
@@ -270,43 +506,98 @@ class LLMBackend(ABC):
     def get_filmography(self, person: str, role: str, top_n: int = 0) -> list:
         # (Reprend la même structure de prompt que l'original — multi-acteur géré
         # par l'appelant qui passe déjà "name1 and name2")
+        #
+        # V7.2: anti-hallucination rewrite. The previous prompt asked
+        # the LLM to "List ALL films" / "output EXACTLY N entries",
+        # which on lower-bitrate quantizations (IQ2 / IQ3) pushed the
+        # model to invent titles to fill the quota. Symptom (real
+        # run, jul 2026): --actor "will ferrell" returned 28 titles
+        # of which 10+ did not feature Will Ferrell at all (Hallo,
+        # Irreversible, Lucky You, Viva Pinata, Dick and Jane, Hall
+        # Pass, The Producers 2005, etc.). The post-hoc role-match
+        # validator in newmovies.py correctly rejected them, but
+        # the visible "Missing" list was anemic (~4 films).
+        #
+        # V7.3: completeness-first rewrite. The V7.2 "100% CERTAIN"
+        # threshold was so strict that gemma-4-26B-A4B (the model
+        # the user is running on .32:8080, jul 2026) over-pruned
+        # its own output: it knows ~14 Will Ferrell films but
+        # only emitted 9 in the JSON because it kept
+        # self-correcting ("Wait, is Bewitched really Ferrell? Let
+        # me re-verify...") and trimming the list as it went. The
+        # reasoning ate the entire 2048-token budget, finish_reason
+        # became "length", and the second/clean JSON at the end
+        # was past the cutoff.
+        #
+        # New strategy: ask for completeness, gate the model to
+        # output a single clean JSON (no mid-stream self-correction
+        # in the visible response), and let the post-hoc OMDb
+        # role-match validator in newmovies.py do the final
+        # accuracy gate. The validator is already the source of
+        # truth (it cross-references OMDb's Actors field), so the
+        # LLM doesn't need to be 100% perfect — it needs to be
+        # ~85% and not invent.
         role_desc = {
-            "director": (f"List ALL theatrical films directed by {person}.\n"
-                         f"Include only films where {person} is the main director."),
-            "actor":    (f"List ALL theatrical films where {person} has a significant "
-                         f"role (lead or major supporting).\n"
-                         f"Include only films where {person} actually appears on screen."),
-            "cast":     (f"List ALL theatrical films where {person} ALL appear together "
-                         f"in the same film.\n"
-                         f"Only include films where EVERY one of these actors has a role."),
-            "composer": (f"List ALL theatrical films for which {person} composed the "
-                         f"original score/soundtrack.\n"
-                         f"Include only films where {person} is the main composer."),
-            "author":   (f"List ALL theatrical films adapted from works written by {person}.\n"
+            "director": (f"List theatrical films DIRECTED by {person}.\n"
+                         f"Only include films where {person} is credited as the main director."),
+            "actor":    (f"List theatrical films FEATURING {person} as a credited "
+                         f"cast member (lead, co-lead, or major supporting).\n"
+                         f"Only include films where {person} actually appears on screen "
+                         f"in a real acting role."),
+            "cast":     (f"List theatrical films where ALL of {person} appear together.\n"
+                         f"Only include films where EVERY one of these actors has a "
+                         f"credited role."),
+            "composer": (f"List theatrical films SCORED by {person}.\n"
+                         f"Only include films where {person} is credited as the main "
+                         f"composer of the original score."),
+            "author":   (f"List theatrical films ADAPTED from works written by {person}.\n"
                          f"Include novels, short stories, and plays adapted into films."),
-        }.get(role, f"List ALL theatrical films associated with {person}.")
-        limit_i = (f'- List the {top_n} most notable films only'
-                   if top_n > 0 else '- Include ALL films, do not omit any')
+        }.get(role, f"List theatrical films associated with {person}.")
+        cap = top_n if top_n > 0 else 30
         prompt = "\n".join([
             "You are a film expert with encyclopedic knowledge of world cinema.",
             "", role_desc, "",
-            "STRICT Rules:",
-            "- Only REAL theatrically released films (NO TV shows, NO shorts)",
-            limit_i,
-            "- List in chronological release order",
+            "STRICT Rules (do not violate):",
+            "- Only REAL theatrically released films (NO TV shows, NO shorts, NO docs)",
+            f"- Output AT MOST {cap} titles. Aim for completeness within that cap.",
+            "- List in chronological release order (oldest first)",
             "- Use EXACT English theatrical release title",
             "- Each entry must be ONLY the film title, nothing else",
-            # V5.21: count rule. Helps the model not skip famous films
-            # (e.g. for "kevin james" it forgot Paul Blart: Mall Cop).
-            f"- If the person has N films matching the role, output EXACTLY N entries",
+            "- Output a single JSON object — do NOT output multiple JSON blocks",
+            "- Do NOT add commentary, self-corrections, or reasoning OUTSIDE the JSON",
+            "- All self-checking happens BEFORE you start writing the JSON",
             "",
-            'Respond ONLY with this exact JSON (no other text):',
+            "ACCURACY RULES (the model has hallucinated before — read carefully):",
+            f"- Include a film if you have a STRONG, WELL-ATTRIBUTED belief that {person} "
+            f"is credited in the requested role ({role}).",
+            f"- A famous, widely-cited film (Anchorman, Elf, etc.) should be INCLUDED even "
+            f"if you're not 100% certain of the exact year.",
+            f"- A well-attributed, mid-tier Ferrell/actor/etc. film should also be INCLUDED.",
+            f"- Do NOT include films where {person} has only a cameo, uncredited appearance, "
+            f"archive footage, or is only mentioned by name.",
+            f"- Do NOT include films where {person} is only a voice actor (animated films "
+            f"where they don't physically appear count as voice roles — be cautious).",
+            f"- Do NOT include films by similarly-named people (common-name disambiguation: "
+            f"check the person is the exact {role} you mean).",
+            f"- Do NOT invent titles. If a title is not a real film, do NOT include it.",
+            "",
+            "REASONING DISCIPLINE (critical to avoid truncation):",
+            "- Do ALL your self-checking internally before you start writing the JSON.",
+            "- Do NOT write 'Wait, let me verify...' / 'Self-correction:' / 'I must stop...' "
+            "in the response. These eat tokens and cause the JSON to be truncated.",
+            "- If you catch yourself unsure mid-write, OMIT that title silently — never "
+            "explain the omission in the visible response.",
+            "",
+            'Respond ONLY with this exact JSON (no markdown fence, no commentary):',
             '{"films": ["Title 1", "Title 2", "Title 3"]}',
         ])
         # Fallback prompt (repris de l'original) : si le gros prompt timeout,
-        # on retente avec une formulation simple.
+        # on retente avec une formulation simple. V7.2: also accuracy-first
+        # to avoid the same hallucination pattern when the model retries.
         fallback_prompt = "\n".join([
-            f"List the 20 most famous films where {person} is {role}.",
+            f"List the 15 films you are MOST CERTAIN feature {person} as {role}.",
+            f"Only include films where {person} is undeniably credited in the role.",
+            f"Do NOT guess or invent titles — if unsure, leave the film out.",
             "Reply ONLY with JSON:",
             '{"films": ["Title 1", "Title 2", "Title 3"]}',
         ])
@@ -472,6 +763,50 @@ class LlamaCppBackend(LLMBackend):
         self._timeouts["long"]  = 300
         self._timeouts["huge"]  = 360
         self._timeouts["embed"] = 30
+        # V7.2: actual_model is the model *currently loaded on the
+        # server*, resolved at healthcheck time via GET /v1/models.
+        # Falls back to self.model (the config value) when the
+        # server doesn't expose /v1/models or returns nothing
+        # parseable. This is what the user sees in the banner,
+        # because llama-server's OpenAI-compat API IGNORES the
+        # "model" field of the request and serves whatever is
+        # actually loaded — so the config value can be wrong/stale
+        # without anyone noticing. The user swaps models on .32
+        # between test runs, so the resolved value matters.
+        self.actual_model: Optional[str] = None
+
+    def _resolve_actual_model(self) -> Optional[str]:
+        """Ask the server what's actually loaded. Returns the model
+        id string (e.g. "/home/niko/mnt/4/models/Qwen3.6-...gguf")
+        or None if it can't be determined. Never raises — this is
+        best-effort display info, not a health gate."""
+        try:
+            r = requests.get(f"{self.base_url}/v1/models", timeout=10)
+            if not r.ok:
+                return None
+            data = r.json()
+            # llama.cpp returns {"data": [...]} AND {"models": [...]}.
+            # The first entry in either is what's actually loaded.
+            if isinstance(data.get("data"), list) and data["data"]:
+                return data["data"][0].get("id") or data["data"][0].get("name")
+            if isinstance(data.get("models"), list) and data["models"]:
+                return (data["models"][0].get("name")
+                        or data["models"][0].get("id"))
+        except Exception:
+            pass
+        return None
+
+    def _short_model_name(self, model_id: str) -> str:
+        """Turn a long filesystem path into a short label like
+        'Qwen3.6-35B-A3B-UD-IQ2_M.gguf' (basename) for display.
+        Stays the full string if it's already a short name
+        (e.g. 'llama3.1:8b' from Ollama)."""
+        if not model_id:
+            return model_id
+        # If it contains a path separator, take the basename.
+        if "/" in model_id or "\\" in model_id:
+            return model_id.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        return model_id
 
     def healthcheck(self) -> bool:
         """Vérifie que le serveur répond ET que le modèle est listé/chargé."""
@@ -483,6 +818,9 @@ class LlamaCppBackend(LLMBackend):
         except Exception:
             return False
         # 2) /v1/models (vérifie que le modèle est connu du serveur)
+        # V7.2: also cache the actually-loaded model id (first entry)
+        # so the banner can show the real name, not the config value
+        # which may be stale/wrong (the user swaps models on .32).
         try:
             r = requests.get(f"{self.base_url}/v1/models", timeout=10)
             if not r.ok:
@@ -494,6 +832,8 @@ class LlamaCppBackend(LLMBackend):
             elif "models" in data:
                 # llama.cpp renvoie "models" ET "data" dans la réponse (vu plus haut)
                 listed = [m.get("name") or m.get("id") for m in data["models"]]
+            if listed:
+                self.actual_model = listed[0]
             # On accepte si le modèle est listé OU si aucun modèle n'est listé
             # (le warmup se fera au premier vrai appel).
             if listed and self.model not in listed:
@@ -516,15 +856,65 @@ class LlamaCppBackend(LLMBackend):
 
     def chat(self, prompt: str, kind: str = "chat", temperature: float = 0.2,
              max_tokens: int = 1024) -> str:
-        # max_tokens minimum 2048 pour absorber le chain-of-thought des modèles
-        # type Qwen/ornith-aeon (raisonnement ~500-1500 tokens avant la réponse).
-        # Au-dessous, le raisonnement mange tout le budget et le content sort vide.
-        eff_max = max(max_tokens, 2048)
+        # V7.5: stop sequences + reduced huge floor.
+        #
+        # V7.3 set the huge floor to 6144, betting that more headroom
+        # would let gemma-4-26B-A4B finish its visible reasoning
+        # burn and emit a clean JSON. That was wrong: the floor just
+        # let the model ramble for the full budget. Live run (jul
+        # 2026, --actor "will ferrell"): 6143/6144 tokens consumed,
+        # finish_reason="length", the JSON never closed, parser
+        # returned 0 films, run aborted.
+        #
+        # Real fix is two-pronged:
+        #   1. Cut the budget back to 2048 for huge — the model has
+        #      30 titles × ~30 chars/entry + ~200 chars of JSON
+        #      syntax = ~1100 tokens. 2048 gives headroom for the
+        #      gemma-4 reasoning intro (~300 tokens observed) without
+        #      letting it loop indefinitely.
+        #   2. Pass `stop` sequences to llama-server. The OpenAI-
+        #      compat API honors them. Patterns targeted:
+        #        - "\n\n" : a double newline never appears in a
+        #          well-formed JSON {"films": [...]} array, but
+        #          gemma-4 emits tons of "\n\n" between reasoning
+        #          paragraphs. Cutting on "\n\n" stops the model
+        #          mid-ramble, after the JSON has been emitted.
+        #        - "Wait," / "Wait " / "Let me" / "Self-correction" :
+        #          signature patterns of visible reasoning. We use
+        #          these as a secondary defense in case the model
+        #          doesn't emit "\n\n" but starts talking about
+        #          verifying.
+        # Together: a 30-title JSON + 200 tokens of intro = ~1300
+        # tokens, well under the 2048 budget. The model can't ramble
+        # for thousands of tokens because the stop sequence fires
+        # as soon as it tries.
+        #
+        # Compatibility: the stop sequences are conservative.
+        # "\n\n" never breaks a JSON parser (it never appears inside
+        # a string the model is currently writing — even escaped
+        # quotes in JSON are `\\n` not actual newlines). The
+        # Wait/Self-correction patterns never appear at the start of
+        # a film title in any reasonable database. So the stops
+        # only fire on reasoning text, never on valid JSON content.
+        floor = {
+            "chat":  2048,
+            "long":  2048,
+            "huge":  2048,
+            "embed": 2048,
+        }.get(kind, 2048)
+        eff_max = max(max_tokens, floor)
+        # Stop sequences: a "\n\n" cuts mid-ramble, the others are
+        # reasoning signatures observed on gemma-4-26B-A4B. We
+        # order them so the most common one ("\n\n") is checked
+        # first by the server. llama-server supports up to 4 stops
+        # in the OpenAI-compat API; we use all 4.
+        stop_seqs = ["\n\n", "Wait,", "Self-correction", "Let me verify"]
         r = requests.post(
             f"{self.base_url}/v1/chat/completions",
             json={"model": self.model,
                   "messages": [{"role": "user", "content": prompt}],
-                  "temperature": temperature, "max_tokens": eff_max},
+                  "temperature": temperature, "max_tokens": eff_max,
+                  "stop": stop_seqs},
             timeout=self._timeout_for(kind))
         r.raise_for_status()
         data = r.json()
