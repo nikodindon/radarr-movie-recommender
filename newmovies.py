@@ -228,6 +228,8 @@ parser.add_argument("--no-tmdb-first", dest="tmdb_first",
 # web UI version will be a separate piece.
 parser.add_argument("--onboard", action="store_true",
     help="(CLI) interactive onboarding for new Radarr libraries. Asks a few taste questions then proposes 2 films per genre to add.")
+parser.add_argument("--interactive", action="store_true",
+    help="Chat with the LLM as a movie expert. The system prompt is loaded with your full Radarr library so it can recommend films you don't own, point you to similar titles, or just discuss cinema. Type a message and press Enter to reply; press Ctrl+D (EOF) or Ctrl-C to exit.")
 args = parser.parse_args()
 
 # =========================
@@ -2997,6 +2999,148 @@ def run_onboard(radarr_titles: set, radarr_tmdb: set) -> None:
 
 
 # =========================
+# INTERACTIVE CHAT (V5.30)
+# =========================
+def _format_library_for_prompt(radarr: list, max_titles: int = 2000) -> str:
+    """Build a compact, token-friendly text dump of the Radarr library
+    to feed into the system prompt. Sorted by year then title.
+
+    We cap at `max_titles` lines because some Radarr libraries have
+    5000+ films and the system prompt would blow past the context
+    window. The cap is generous (2000) but if you go over we append a
+    "X more films not shown" line so the model knows the list is
+    truncated, not exhaustive.
+    """
+    films = [m for m in radarr if m.get("title")]
+    films.sort(key=lambda m: (m.get("year") or 0, m["title"].lower()))
+    lines = []
+    for m in films[:max_titles]:
+        year = m.get("year") or "????"
+        title = m["title"]
+        genres = ", ".join(m.get("genres") or []) or "—"
+        # rating is on a 0-10 scale (Radarr stores it that way)
+        rating = m.get("ratings", {}).get("value") if isinstance(m.get("ratings"), dict) else None
+        rating_str = f" [{rating:.1f}/10]" if isinstance(rating, (int, float)) else ""
+        runtime = m.get("runtime")
+        rt_str = f" {runtime}m" if isinstance(runtime, (int, float)) and runtime else ""
+        lines.append(f"- {year} — {title}{rt_str} — {genres}{rating_str}")
+    if len(films) > max_titles:
+        lines.append(f"… and {len(films) - max_titles} more films not shown.")
+    return "\n".join(lines)
+
+
+def run_interactive(radarr: list) -> None:
+    """V5.30: chat REPL with the LLM. The system prompt tells it it's
+    a cinema expert who knows the user's Radarr library, can recommend
+    films they don't own, explain cinema history, etc.
+
+    Loop until EOF (Ctrl-D) or KeyboardInterrupt (Ctrl-C). Each user
+    message is sent as part of an OpenAI-style messages array so the
+    LLM keeps full conversation context across turns (handled by
+    LlamaCppBackend.chat's new `messages=` param).
+    """
+    if LLM is None:
+        log("LLM backend not available. Check config.yaml (llm_backend, llm_model, llamacpp_base_url).", "ERROR")
+        return
+    if not LLM.healthcheck():
+        log(f"LLM healthcheck failed at {LLM.base_url}. Is llama-server running?", "ERROR")
+        return
+
+    library_text = _format_library_for_prompt(radarr)
+    n_films = sum(1 for m in radarr if m.get("title"))
+    cprint("", "reset")
+    cprint("  Interactive cinema chat", "cyan", bold=True)
+    cprint(f"  Library loaded: {n_films} films", "gray")
+    cprint(f"  Backend: {LLM.name} ({getattr(LLM, 'model', '?')})", "gray")
+    cprint("  Type a message and press Enter. Ctrl-D (EOF) or Ctrl-C to quit.", "gray")
+    cprint("", "reset")
+
+    system_prompt = (
+        "You are a passionate, knowledgeable cinema expert advising a film "
+        "enthusiast. You have deep knowledge of cinema history, movements, "
+        "directors, actors, technical craft, and cultural context. You speak "
+        "in the user's language (default French unless they switch).\n\n"
+        f"The user owns the following Radarr library ({n_films} films). "
+        "Use it to ground your answers — point out films they already own, "
+        "suggest films they don't own that fit their taste, explain why a "
+        "film resonates with other titles in their collection. Do NOT pretend "
+        "to know a film that is not in the library; if the user asks about a "
+        "film and you're unsure, say so plainly.\n\n"
+        "LIBRARY:\n"
+        f"{library_text}\n\n"
+        "Be concise, warm, opinionated. Give 2-3 concrete suggestions max "
+        "unless asked for more. When you recommend a film, mention the year "
+        "and director so the user can find it."
+    )
+
+    messages: list = [{"role": "system", "content": system_prompt}]
+
+    # Use input() in a loop. Two ways out:
+    #   - Ctrl-D / EOFError: graceful exit
+    #   - Ctrl-C / KeyboardInterrupt: graceful exit
+    #   - empty line + Enter: re-prompt without sending
+    # We catch both exception types and break out cleanly.
+    while True:
+        try:
+            user_input = input("  vous> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()  # newline after ^D/^C
+            cprint("  À+.", "cyan")
+            return
+
+        if not user_input:
+            continue
+
+        # /quit and /exit as explicit shortcuts (in case stdin is piped
+        # and EOF isn't reachable from a keyboard).
+        if user_input.lower() in ("/quit", "/exit", ":q"):
+            cprint("  À+.", "cyan")
+            return
+
+        messages.append({"role": "user", "content": user_input})
+
+        try:
+            reply = LLM.chat(
+                prompt="",          # ignored when messages= is provided
+                kind="chat",
+                temperature=0.7,    # a touch warmer than the 0.2 used for
+                                    # structured extraction — chat reads
+                                    # better with some variation
+                max_tokens=1024,
+                messages=messages,
+                stop=None,          # no extra stops for chat — the JSON
+                                    # defaults ("\n\n", "Wait,", ...)
+                                    # would chop conversational replies
+                                    # mid-paragraph. The model stops on
+                                    # EOS or max_tokens instead.
+            )
+        except Exception as e:
+            log(f"LLM error: {e}", "ERROR")
+            # Drop the user message we just appended so the next turn
+            # doesn't double-fire. The user can retry the same question.
+            messages.pop()
+            continue
+
+        # Strip leading/trailing whitespace; some models add a stray
+        # leading newline that throws off the terminal display.
+        reply = (reply or "").strip()
+        if not reply:
+            cprint("  (empty response from LLM — try again)", "yellow")
+            # Same: drop the user message so the next turn is clean.
+            messages.pop()
+            continue
+
+        # Print the reply with a left margin so it visually separates
+        # from the user's input. Multi-line replies keep their own
+        # line breaks.
+        cprint("  expert>", "magenta", bold=True)
+        for line in reply.splitlines():
+            print(f"  {line}")
+
+        messages.append({"role": "assistant", "content": reply})
+
+
+# =========================
 # MAIN
 # =========================
 def main():
@@ -3039,6 +3183,12 @@ def main():
     BLACKLIST.update(radarr_titles)
     log(f"Blacklist loaded: {len(BLACKLIST)} titles")
     print_header(len(BLACKLIST), genre_filter=args.genre)
+
+    # ── --interactive mode: chat REPL with the LLM ─────────────────────
+    if args.interactive:
+        run_interactive(radarr)
+        return
+    # ─────────────────────────────────────────────────────────────────────
 
     # Build source pool — filter by genre if --genre is specified
     pool = [m for m in radarr if m.get("title")]

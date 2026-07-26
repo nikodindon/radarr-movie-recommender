@@ -305,6 +305,10 @@ def parse_sagas(raw: str) -> dict:
 
 class LLMBackend(ABC):
     name = "abstract"
+    # Declared on the base so call sites (e.g. --interactive healthcheck
+    # error message) can reference `backend.base_url` without tripping
+    # the LSP. Subclasses that need it (LlamaCppBackend) override.
+    base_url: Optional[str] = None
 
     def __init__(self, model: str, no_timeout: bool = False):
         self.model = model
@@ -329,9 +333,21 @@ class LLMBackend(ABC):
         ...
 
     @abstractmethod
-    def chat(self, prompt: str, kind: str = "chat", temperature: float = 0.2,
-             max_tokens: int = 1024) -> str:
-        """Renvoie le contenu textuel brut. Lève en cas d'échec."""
+    def chat(self, prompt: str = "", kind: str = "chat", temperature: float = 0.2,
+             max_tokens: int = 1024, messages: Optional[list] = None,
+             stop: Optional[list] = None) -> str:
+        """Renvoie le contenu textuel brut. Lève en cas d'échec.
+
+        Si `messages` est fourni (liste OpenAI-chat de {role, content}),
+        il est envoyé tel quel et `prompt` est ignoré. Sinon on construit
+        un unique message user avec `prompt` — l'ancien contrat préservé
+        pour les 30+ appelants de chat() à travers le projet.
+
+        `stop` override les stop sequences par défaut. None = aucune
+        (le modèle parle jusqu'à `max_tokens` ou EOS). [] = défauts JSON
+        (les stops pensés pour l'extraction structurée). Une liste =
+        cette liste exacte.
+        """
         ...
 
     def chat_with_fallback(self, prompt: str, fallback_prompt: str,
@@ -854,8 +870,23 @@ class LlamaCppBackend(LLMBackend):
         except Exception:
             return False
 
-    def chat(self, prompt: str, kind: str = "chat", temperature: float = 0.2,
-             max_tokens: int = 1024) -> str:
+    def chat(self, prompt: str = "", kind: str = "chat", temperature: float = 0.2,
+             max_tokens: int = 1024, messages: Optional[list] = None,
+             stop: Optional[list] = None) -> str:
+        # V5.30: `messages` is a list of {role, content} dicts in
+        # OpenAI-chat format. When provided, we use it directly (and
+        # `prompt` is ignored). When None, we fall back to a single
+        # user message built from `prompt` — the old contract every
+        # other helper in this file relies on. This lets --interactive
+        # run a real multi-turn conversation with a system prompt
+        # without breaking the 30+ callers of chat() elsewhere.
+        #
+        # `stop` lets the caller override the default JSON-friendly
+        # stop sequences. The chat REPL needs different stops (or
+        # none) — JSON stops like "\n\n" or "Wait," fire on natural
+        # paragraphs and chop chat replies in half.
+        if messages is None:
+            messages = [{"role": "user", "content": prompt}]
         # V7.5: stop sequences + reduced huge floor.
         #
         # V7.3 set the huge floor to 6144, betting that more headroom
@@ -908,11 +939,17 @@ class LlamaCppBackend(LLMBackend):
         # order them so the most common one ("\n\n") is checked
         # first by the server. llama-server supports up to 4 stops
         # in the OpenAI-compat API; we use all 4.
-        stop_seqs = ["\n\n", "Wait,", "Self-correction", "Let me verify"]
+        # Override: if the caller passed `stop=`, use that instead.
+        # None means "no extra stops beyond EOS"; [] means "use
+        # defaults"; a list means "use this exact list".
+        if stop is None:
+            stop_seqs = None
+        else:
+            stop_seqs = stop if stop else ["\n\n", "Wait,", "Self-correction", "Let me verify"]
         r = requests.post(
             f"{self.base_url}/v1/chat/completions",
             json={"model": self.model,
-                  "messages": [{"role": "user", "content": prompt}],
+                  "messages": messages,
                   "temperature": temperature, "max_tokens": eff_max,
                   "stop": stop_seqs},
             timeout=self._timeout_for(kind))
