@@ -3270,6 +3270,14 @@ def run_interactive(radarr: list) -> None:
                                     # would chop conversational replies
                                     # mid-paragraph. The model stops on
                                     # EOS or max_tokens instead.
+                # V5.30.3: anti-degeneration. The Q2_K model we run
+                # locally falls into repetition loops on long
+                # free-form answers (live test jul 2026: "The Day After
+                # Tomorrow" repeated 200+ times in a single reply).
+                # 1.15 is the smallest value that consistently broke
+                # the loops in our tests; higher (1.3+) starts to
+                # hurt coherence on normal replies.
+                repetition_penalty=1.15,
             )
         except Exception as e:
             log(f"LLM error: {e}", "ERROR")

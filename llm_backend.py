@@ -335,7 +335,10 @@ class LLMBackend(ABC):
     @abstractmethod
     def chat(self, prompt: str = "", kind: str = "chat", temperature: float = 0.2,
              max_tokens: int = 1024, messages: Optional[list] = None,
-             stop: Optional[list] = None) -> str:
+             stop: Optional[list] = None,
+             repetition_penalty: float = 1.0,
+             frequency_penalty: float = 0.0,
+             presence_penalty: float = 0.0) -> str:
         """Renvoie le contenu textuel brut. Lève en cas d'échec.
 
         Si `messages` est fourni (liste OpenAI-chat de {role, content}),
@@ -347,6 +350,12 @@ class LLMBackend(ABC):
         (le modèle parle jusqu'à `max_tokens` ou EOS). [] = défauts JSON
         (les stops pensés pour l'extraction structurée). Une liste =
         cette liste exacte.
+
+        `repetition_penalty` (1.0 par défaut, no-op) pénalise la
+        répétition token-level. `frequency_penalty` et `presence_penalty`
+        (0.0 par défaut, no-op) sont les variantes OpenAI standard.
+        Le mode interactif passe repetition_penalty=1.15 pour casser
+        les boucles de dégénérescence du modèle.
         """
         ...
 
@@ -872,7 +881,10 @@ class LlamaCppBackend(LLMBackend):
 
     def chat(self, prompt: str = "", kind: str = "chat", temperature: float = 0.2,
              max_tokens: int = 1024, messages: Optional[list] = None,
-             stop: Optional[list] = None) -> str:
+             stop: Optional[list] = None,
+             repetition_penalty: float = 1.0,
+             frequency_penalty: float = 0.0,
+             presence_penalty: float = 0.0) -> str:
         # V5.30: `messages` is a list of {role, content} dicts in
         # OpenAI-chat format. When provided, we use it directly (and
         # `prompt` is ignored). When None, we fall back to a single
@@ -885,6 +897,15 @@ class LlamaCppBackend(LLMBackend):
         # stop sequences. The chat REPL needs different stops (or
         # none) — JSON stops like "\n\n" or "Wait," fire on natural
         # paragraphs and chop chat replies in half.
+        #
+        # V5.30.3: added repetition_penalty / frequency_penalty /
+        # presence_penalty. Defaults are 1.0 / 0.0 / 0.0 (the llama.cpp
+        # defaults and a no-op) so the 30+ existing callers in the
+        # recommendation modes are unaffected. The interactive REPL
+        # passes repetition_penalty=1.15 to break the degeneration
+        # loops the Q2_K model falls into on long free-form answers
+        # (live test jul 2026: model looped "The Day After Tomorrow"
+        # 200+ times in a single response).
         if messages is None:
             messages = [{"role": "user", "content": prompt}]
         # V7.5: stop sequences + reduced huge floor.
@@ -951,7 +972,14 @@ class LlamaCppBackend(LLMBackend):
             json={"model": self.model,
                   "messages": messages,
                   "temperature": temperature, "max_tokens": eff_max,
-                  "stop": stop_seqs},
+                  "stop": stop_seqs,
+                  # Sampling penalties. OpenAI-compat params forwarded
+                  # straight to llama-server. All three are no-ops at
+                  # their defaults (1.0 / 0.0 / 0.0) so the existing
+                  # structured-extraction callers are unaffected.
+                  "repetition_penalty": repetition_penalty,
+                  "frequency_penalty":  frequency_penalty,
+                  "presence_penalty":    presence_penalty},
             timeout=self._timeout_for(kind))
         r.raise_for_status()
         data = r.json()
