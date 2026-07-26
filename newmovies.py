@@ -3005,6 +3005,15 @@ def _format_library_for_prompt(radarr: list, max_titles: int = 2000) -> str:
     """Build a compact, token-friendly text dump of the Radarr library
     to feed into the system prompt. Sorted by year then title.
 
+    Format: `- Title (Year)` — one line per film, no genres/rating/runtime.
+    That's the minimum the LLM needs to know "is this film already in
+    the library" and the format it parses most reliably. The earlier
+    version included genres and ratings, but the extra tokens didn't
+    help recommendations and the Q2_K model we're running started
+    hallucinating duplicates once the list pushed past ~25k chars
+    (around 500 films). Keeping the format tight cuts the system
+    prompt in half.
+
     We cap at `max_titles` lines because some Radarr libraries have
     5000+ films and the system prompt would blow past the context
     window. The cap is generous (2000) but if you go over we append a
@@ -3016,17 +3025,46 @@ def _format_library_for_prompt(radarr: list, max_titles: int = 2000) -> str:
     lines = []
     for m in films[:max_titles]:
         year = m.get("year") or "????"
-        title = m["title"]
-        genres = ", ".join(m.get("genres") or []) or "—"
-        # rating is on a 0-10 scale (Radarr stores it that way)
-        rating = m.get("ratings", {}).get("value") if isinstance(m.get("ratings"), dict) else None
-        rating_str = f" [{rating:.1f}/10]" if isinstance(rating, (int, float)) else ""
-        runtime = m.get("runtime")
-        rt_str = f" {runtime}m" if isinstance(runtime, (int, float)) and runtime else ""
-        lines.append(f"- {year} — {title}{rt_str} — {genres}{rating_str}")
+        lines.append(f"- {m['title']} ({year})")
     if len(films) > max_titles:
         lines.append(f"… and {len(films) - max_titles} more films not shown.")
     return "\n".join(lines)
+
+
+def _find_library_overlap(text: str, radarr: list) -> list:
+    """Scan a piece of text (typically the LLM's latest reply) for
+    titles that are already in the user's Radarr library. Returns
+    a list of (title, year) tuples for every match.
+
+    Used right after the LLM responds to flag "hey, you already own
+    The Room, you probably don't want to /add it". Pure info, no
+    side-effects — the user stays in control.
+
+    Matching strategy: lowercase both sides, strip the most common
+    Markdown markers (* _ ` ~) so bold/italic titles still match,
+    then word-boundary substring search. This catches the obvious
+    cases (LLM writes "**The Room** (2003)" → matches library's
+    "The Room (2003)") without false-positiving on partial words
+    ("Heat" won't match "Theater").
+    """
+    # Strip the Markdown markers that show up in chat-formatted
+    # recommendations. The set is small on purpose — we don't want
+    # to munge the text too much, just enough so "**Title** (YYYY)"
+    # matches "Title (YYYY)".
+    norm = re.sub(r"[*_`~]", "", text or "").lower()
+    matches = []
+    seen_titles = set()
+    for m in radarr:
+        title = (m.get("title") or "").strip()
+        if not title or title in seen_titles:
+            continue
+        seen_titles.add(title)
+        title_lower = title.lower()
+        # \b...\b keeps "Heat" from matching "Theater". re.escape
+        # handles parens and punctuation in titles like "Moulin Rouge!".
+        if re.search(r"\b" + re.escape(title_lower) + r"\b", norm):
+            matches.append((m["title"], m.get("year") or "?"))
+    return matches
 
 
 def _save_reco_json(candidates: list, suffix: str = "interactive") -> str:
@@ -3149,21 +3187,22 @@ def run_interactive(radarr: list) -> None:
     cprint("", "reset")
 
     system_prompt = (
-        "You are a passionate, knowledgeable cinema expert advising a film "
-        "enthusiast. You have deep knowledge of cinema history, movements, "
-        "directors, actors, technical craft, and cultural context. You speak "
-        "in the user's language (default French unless they switch).\n\n"
-        f"The user owns the following Radarr library ({n_films} films). "
-        "Use it to ground your answers — point out films they already own, "
-        "suggest films they don't own that fit their taste, explain why a "
-        "film resonates with other titles in their collection. Do NOT pretend "
-        "to know a film that is not in the library; if the user asks about a "
-        "film and you're unsure, say so plainly.\n\n"
-        "LIBRARY:\n"
+        "Tu es un expert cinéphile passionné qui conseille un collectionneur de films.\n\n"
+        "RÈGLES STRICTES :\n"
+        "1. AVANT de recommander un film, vérifie qu'il n'est PAS dans la LISTE ci-dessous. "
+        "Si un film y apparaît (même avec une graphie légèrement différente comme "
+        "'The Matrix' vs 'The Matrix Reloaded'), NE LE RECOMMANDE PAS — l'utilisateur l'a déjà.\n"
+        "2. Si tu n'es pas sûr qu'un film soit dans la liste, NE LE RECOMMANDE PAS non plus.\n"
+        "3. Tu peux parler de films que l'utilisateur possède pour expliquer tes "
+        "recommandations ('puisque tu as apprécié X, tu aimeras Y'), mais ne propose "
+        "jamais X lui-même comme suggestion à ajouter.\n"
+        "4. Limite-toi à 2-3 suggestions max par réponse, sauf demande explicite.\n"
+        "5. Quand tu recommandes un film, donne TOUJOURS le titre exact + année + réalisateur "
+        "pour que l'utilisateur puisse le retrouver. Format : '**Titre** (année, réalisateur)'.\n"
+        "6. Réponds dans la langue de l'utilisateur (par défaut français).\n\n"
+        f"LISTE DES FILMS DÉJÀ POSSÉDÉS ({n_films} films, NE PAS RECOMMANDER CEUX-CI) :\n"
         f"{library_text}\n\n"
-        "Be concise, warm, opinionated. Give 2-3 concrete suggestions max "
-        "unless asked for more. When you recommend a film, mention the year "
-        "and director so the user can find it."
+        "Concentre tes suggestions sur des films ABSENTS de cette liste."
     )
 
     messages: list = [{"role": "system", "content": system_prompt}]
@@ -3254,6 +3293,22 @@ def run_interactive(radarr: list) -> None:
         cprint("  expert>", "magenta", bold=True)
         for line in reply.splitlines():
             print(f"  {line}")
+
+        # Post-reply overlap warning. The Q2_K model still hallucinates
+        # duplicate suggestions sometimes even with the tightened
+        # prompt, so we scan the reply against the library and surface
+        # any matches as a warning the user can act on. No side-effects:
+        # the user still has to /add manually if they want something.
+        overlap = _find_library_overlap(reply, radarr)
+        if overlap:
+            # Cap the listed names so a long overlap doesn't blow up the
+            # terminal. 8 is plenty — past that we just say "and N more".
+            shown = overlap[:8]
+            extra = len(overlap) - len(shown)
+            names = ", ".join(f"« {t} ({y}) »" for t, y in shown)
+            if extra > 0:
+                names += f" (+ {extra} autres)"
+            cprint(f"  ⚠ déjà dans ta bibliothèque : {names}", "yellow")
 
         messages.append({"role": "assistant", "content": reply})
 
