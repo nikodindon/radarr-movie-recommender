@@ -3029,6 +3029,82 @@ def _format_library_for_prompt(radarr: list, max_titles: int = 2000) -> str:
     return "\n".join(lines)
 
 
+def _save_reco_json(candidates: list, suffix: str = "interactive") -> str:
+    """Dump the running list of chat-collected candidates to a
+    timestamped reco_*.json file. Called after every /add so a crash
+    doesn't lose the work. Returns the file path written.
+
+    Matches the existing convention in newmovies.py (reco_YYYYMMDD_HHMM.json)
+    so the file is indistinguishable from any other mode's output.
+    The `suffix` lets us tag interactive-mode files so you can tell
+    at a glance which run produced them.
+    """
+    now = datetime.now()
+    ts = now.strftime("%Y%m%d_%H%M")
+    json_file = f"reco_{ts}_{suffix}.json"
+    try:
+        with open(json_file, "w", encoding="utf-8") as f:
+            json.dump(candidates, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        log(f"Could not write {json_file}: {e}", "WARNING")
+    return json_file
+
+
+def _add_candidate_from_chat(radarr: list, blacklist: set, candidates: list,
+                             title: str, year=None,
+                             source: str = "interactive") -> bool:
+    """Resolve a chat-collected film through Radarr's lookup, build
+    the entry in the same shape the rest of newmovies.py uses, and
+    append to the running candidates list. Returns True on success.
+
+    The lookup is mandatory: without tmdbId the POST to Radarr will
+    fail. If the lookup returns nothing (typo, very obscure film),
+    we tell the user and bail — no half-broken entry in the list.
+
+    `radarr` and `blacklist` are passed in explicitly rather than
+    read from a module-level global — keeps the function testable
+    and avoids stomping on any other state.
+    """
+    title = title.strip()
+    if not title:
+        return False
+    # Reject anything already in the library or blacklisted so we
+    # don't waste a Radarr lookup. This mirrors the existing
+    # duplicate-skip logic used by every other mode.
+    lib_titles = {m["title"] for m in radarr if m.get("title")}
+    if title in lib_titles:
+        cprint(f"    '{title}' is already in your Radarr library — skipped.", "yellow")
+        return False
+    if title in blacklist:
+        cprint(f"    '{title}' is in your blacklist — skipped.", "yellow")
+        return False
+
+    cprint(f"    Looking up '{title}' ({year or '?'}) on Radarr…", "gray")
+    lookup = get_radarr_lookup(title, year)
+    if not lookup or not lookup.get("tmdbId"):
+        cprint(f"    Radarr lookup failed for '{title}'. Not added.", "ERROR")
+        return False
+
+    candidate = {
+        "title":     lookup.get("title", title),
+        "year":      lookup.get("year") or year,
+        "rating":    None,         # filled later by OMDb if needed
+        "score":     0,            # chat recommendations don't get a
+                                  # numeric score; downstream code only
+                                  # uses it for display, so 0 is fine
+        "reasons":   [],
+        "tmdbId":    lookup["tmdbId"],
+        "titleSlug": lookup.get("titleSlug", ""),
+        "images":    lookup.get("images", []),
+        "source":    source,
+        "lookup":    lookup,
+    }
+    candidates.append(candidate)
+    cprint(f"    + {candidate['title']} ({candidate['year']}) queued "
+           f"[{len(candidates)} total]", "green")
+    return True
+
+
 def run_interactive(radarr: list) -> None:
     """V5.30: chat REPL with the LLM. The system prompt tells it it's
     a cinema expert who knows the user's Radarr library, can recommend
@@ -3038,6 +3114,15 @@ def run_interactive(radarr: list) -> None:
     message is sent as part of an OpenAI-style messages array so the
     LLM keeps full conversation context across turns (handled by
     LlamaCppBackend.chat's new `messages=` param).
+
+    V5.30.1: while chatting, the user can run `/add <title> [year]`
+    to queue a film for the final Radarr review. The running list
+    is dumped to reco_*.json after every addition so it survives a
+    crash. When the user quits the REPL, we hand the list off to
+    confirm_and_add() — the same a/o/n review UX as every other
+    mode. That way you can discuss freely, queue films as the LLM
+    surfaces them, and decide at the end whether to add all, one by
+    one, or nothing.
     """
     if LLM is None:
         log("LLM backend not available. Check config.yaml (llm_backend, llm_model, llamacpp_base_url).", "ERROR")
@@ -3048,11 +3133,19 @@ def run_interactive(radarr: list) -> None:
 
     library_text = _format_library_for_prompt(radarr)
     n_films = sum(1 for m in radarr if m.get("title"))
+    candidates: list = []   # collected films, drained by confirm_and_add
+                            # when the REPL exits
+
     cprint("", "reset")
     cprint("  Interactive cinema chat", "cyan", bold=True)
     cprint(f"  Library loaded: {n_films} films", "gray")
     cprint(f"  Backend: {LLM.name} ({getattr(LLM, 'model', '?')})", "gray")
-    cprint("  Type a message and press Enter. Ctrl-D (EOF) or Ctrl-C to quit.", "gray")
+    cprint("  Commands:", "gray")
+    cprint("    /add <title> [year]   queue a film for the final review", "gray")
+    cprint("    /list                 show the current queue", "gray")
+    cprint("    /quit | /exit | :q    leave the chat and review the queue", "gray")
+    cprint("    Ctrl-D / Ctrl-C       same as /quit", "gray")
+    cprint("  Type anything else and press Enter to talk to the expert.", "gray")
     cprint("", "reset")
 
     system_prompt = (
@@ -3075,28 +3168,53 @@ def run_interactive(radarr: list) -> None:
 
     messages: list = [{"role": "system", "content": system_prompt}]
 
-    # Use input() in a loop. Two ways out:
-    #   - Ctrl-D / EOFError: graceful exit
-    #   - Ctrl-C / KeyboardInterrupt: graceful exit
-    #   - empty line + Enter: re-prompt without sending
-    # We catch both exception types and break out cleanly.
+    # The REPL. Two ways out:
+    #   - /quit, /exit, :q      : explicit
+    #   - Ctrl-D / EOFError     : graceful
+    #   - Ctrl-C / KeyboardInterrupt : graceful
+    # All three lead to the same exit path: dump the final JSON, hand
+    # the list to confirm_and_add(), done.
     while True:
         try:
             user_input = input("  vous> ").strip()
         except (EOFError, KeyboardInterrupt):
             print()  # newline after ^D/^C
-            cprint("  À+.", "cyan")
-            return
+            cprint("  Ending chat…", "cyan")
+            break
 
         if not user_input:
             continue
 
-        # /quit and /exit as explicit shortcuts (in case stdin is piped
-        # and EOF isn't reachable from a keyboard).
+        # /quit and /exit
         if user_input.lower() in ("/quit", "/exit", ":q"):
-            cprint("  À+.", "cyan")
-            return
+            cprint("  Ending chat…", "cyan")
+            break
 
+        # /list — show what's queued so far, no LLM call
+        if user_input.lower() == "/list":
+            if not candidates:
+                cprint("    (queue is empty — /add to queue films)", "gray")
+            else:
+                cprint(f"    Queued ({len(candidates)}):", "cyan")
+                for i, m in enumerate(candidates, 1):
+                    cprint(f"      {i}. {m['title']} ({m['year']})", "white")
+            continue
+
+        # /add <title> [year] — explicit add, no LLM call
+        # Year is optional; if missing we try the lookup without one
+        # and trust Radarr's first match.
+        if user_input.lower().startswith("/add "):
+            parts = user_input.split()
+            if len(parts) < 2:
+                cprint("    usage: /add <title> [year]", "yellow")
+                continue
+            title = " ".join(parts[1:-1] if parts[-1].isdigit() and len(parts) >= 2 else parts[1:])
+            year_token = parts[-1] if parts[-1].isdigit() and len(parts) >= 2 else None
+            if _add_candidate_from_chat(radarr, BLACKLIST, candidates, title, year_token):
+                _save_reco_json(candidates)
+            continue
+
+        # Anything else: send to the LLM.
         messages.append({"role": "user", "content": user_input})
 
         try:
@@ -3138,6 +3256,19 @@ def run_interactive(radarr: list) -> None:
             print(f"  {line}")
 
         messages.append({"role": "assistant", "content": reply})
+
+    # ── End of REPL. Hand the queue to the standard review flow. ─────
+    # We always save the JSON, even if empty, so the file on disk
+    # reflects what the user saw at exit time. confirm_and_add() is
+    # a no-op on an empty list, so the user can quit after a pure
+    # discussion with zero queued films and nothing weird happens.
+    json_file = _save_reco_json(candidates)
+    cprint(f"  Chat log saved: {json_file} ({len(candidates)} queued)", "gray")
+    if candidates:
+        cprint("  → handing off to the standard review…", "cyan")
+        confirm_and_add(candidates, label="from interactive chat")
+    else:
+        cprint("  Nothing queued — no Radarr review needed.", "gray")
 
 
 # =========================
